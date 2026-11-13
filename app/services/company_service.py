@@ -22,11 +22,34 @@ from app.processors.embedder import TextEmbedder
 from app.processors.llm_extractor import LLMExtractor
 from app.services.auth_service import AuthService
 from app.services.company_website_scraper import CompanyWebsiteScraper
+from app.services.relevance_service import schedule_refresh
 from app.services.socket_manager import manager
 from app.utils.helpers import ensure_dir, safe_filename, sha256_file
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Offering-profile fields the user may edit after extraction.
+OFFERING_LIST_FIELDS = [
+    "core_capabilities",
+    "offerings",
+    "capabilities",
+    "technologies",
+    "domains",
+    "target_sectors",
+    "preferred_procurement_types",
+    "excluded_capabilities",
+    "certifications",
+    "registrations",
+    "tender_search_keywords",
+]
+# Fields that only steer GeM searching, not matching - editing them keeps cached match judgments.
+SEARCH_ONLY_FIELDS = {"tender_search_keywords"}
+# Fields used only by the deterministic eligibility check (computed live), not by the LLM judgment.
+ELIGIBILITY_ONLY_FIELDS = {"annual_turnover", "annual_turnover_inr", "is_dpiit_startup", "is_mse"}
+OFFERING_FIELDS = set(OFFERING_LIST_FIELDS) | {
+    "business_type", "summary", "annual_turnover", "annual_turnover_inr", "is_dpiit_startup", "is_mse",
+}
 
 
 def utcnow() -> datetime:
@@ -348,12 +371,14 @@ class CompanyService:
             await self.repo.update(
                 company_id,
                 {
-                    "metadata": metadata,
+                    "metadata": self._normalize_offering(metadata or {}),
+                    "metadata_updated_at": utcnow().isoformat(),
                     "summary_embedding": embedding,
                     "status": status,
                     "updated_at": utcnow(),
                 },
             )
+            schedule_refresh(self.db, company_id)
 
             await self._broadcast_progress(
                 job="PROCESS_COMPANY",
@@ -381,6 +406,52 @@ class CompanyService:
                 total=3,
                 message=str(exc),
             )
+
+    async def update_offering(self, company_id: str, owner_user_id: str, changes: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Let the user correct the extracted offering profile (capabilities, exclusions,
+        procurement types, turnover...). Any change invalidates cached match judgments.
+        """
+        profile = await self._get_owned_profile(company_id, owner_user_id)
+        if not profile:
+            raise ValueError("Company profile not found")
+
+        old_metadata = self._normalize_offering(dict(profile.get("metadata") or {}))
+        metadata = dict(old_metadata)
+        for key, value in changes.items():
+            if key in OFFERING_FIELDS and value is not None:
+                metadata[key] = value
+        metadata = self._normalize_offering(metadata)
+
+        offering_changed = any(
+            metadata.get(key) != old_metadata.get(key)
+            for key in OFFERING_FIELDS - SEARCH_ONLY_FIELDS - ELIGIBILITY_ONLY_FIELDS
+        )
+        update: Dict[str, Any] = {"metadata": metadata, "updated_at": utcnow()}
+        years = changes.get("experience_years")
+        if isinstance(years, (int, float)) and 0 <= years <= 100:
+            update["experience_years"] = int(years)
+        if offering_changed:
+            update["metadata_updated_at"] = utcnow().isoformat()
+        await self.repo.update(company_id, update)
+        if offering_changed:
+            schedule_refresh(self.db, company_id)
+        latest = await self.get_profile(company_id, owner_user_id)
+        return latest or {}
+
+    @staticmethod
+    def _normalize_offering(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean list fields so matching always sees lists of non-empty strings."""
+        cleaned = dict(metadata)
+        for key in OFFERING_LIST_FIELDS:
+            value = cleaned.get(key)
+            if isinstance(value, str):
+                value = [part for part in value.split(",")]
+            if isinstance(value, list):
+                cleaned[key] = [str(v).strip() for v in value if v and str(v).strip()]
+        if isinstance(cleaned.get("preferred_procurement_types"), list):
+            cleaned["preferred_procurement_types"] = [v.lower() for v in cleaned["preferred_procurement_types"]]
+        return cleaned
 
     def _build_combined_text(self, profile: Dict[str, Any]) -> str:
         chunks: List[str] = []

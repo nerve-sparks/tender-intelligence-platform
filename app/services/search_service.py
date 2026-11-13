@@ -13,7 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database.repositories.company_repo import CompanyRepository
 from app.database.repositories.tender_repo import TenderRepository
 from app.processors.embedder import TextEmbedder
-from app.services.matching_utils import calculate_enhanced_match_score, semantic_overlap_score
+from app.services.matching_utils import calculate_enhanced_match_score
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

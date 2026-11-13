@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Scraping
     SCRAPE_MAX_PAGES: int = 10
     SCRAPE_MAX_BIDS: int = 200
+    SCRAPE_MAX_KEYWORDS: int = 10  # GeM keyword searches per scrape (from company profiles)
+    SCRAPE_KEYWORD_PAGES: int = 2  # result pages per keyword search
+    SCRAPE_KEYWORD_MAX_BIDS: int = 40  # bids per keyword search
     SCRAPE_MIN_DELAY: int = 2
     SCRAPE_MAX_DELAY: int = 5
     SCRAPER_HEADLESS: bool = True
@@ -64,6 +67,12 @@ class Settings(BaseSettings):
     SCRAPE_INTERVAL_HOURS: int = 6
     PROCESS_INTERVAL_MINUTES: int = 30
     PROCESS_BATCH_LIMIT: int = 50
+
+    # Business-relevance matching
+    MATCH_MIN_SCORE: float = 0.7  # "best match" threshold for the tenders list and dashboard
+    MATCH_LLM_MAX_PER_RUN: int = 40  # max LLM relevance judgments per company per refresh
+    MATCH_LLM_MIN_QUICK_SCORE: float = 0.15  # tenders below this pre-score are not sent to the LLM
+    MATCH_AUTO_REFRESH: bool = True  # refresh matches after profile processing / tender scraping
 
     # Auth
     JWT_SECRET: str = "change-me"

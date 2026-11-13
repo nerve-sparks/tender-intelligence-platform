@@ -30,13 +30,59 @@ export interface CompanyProfile {
   metadata?: Record<string, unknown>;
 }
 
+export type Level = "HIGH" | "MEDIUM" | "LOW" | "NONE";
+export type Recommendation = "PURSUE" | "CONSIDER" | "SKIP";
+
+export interface EligibilityCheck {
+  label: string;
+  required: string;
+  company: string;
+  status: "met" | "not_met" | "unknown" | "exempt";
+}
+
+export interface TenderMatch {
+  score: number;
+  /** true once the business-relevance judgment (or a hard-gate rejection) exists */
+  verified: boolean;
+  procurement_type?: string | null;
+  business_relevance?: Level | null;
+  capability_alignment?: Level | null;
+  buyer_relevance?: Level | null;
+  eligibility?: {
+    fit: "MET" | "NOT_MET" | "UNKNOWN";
+    score: number;
+    checks: EligibilityCheck[];
+  };
+  why_matches?: string[];
+  gaps?: string[];
+  recommendation?: Recommendation | null;
+  /** Gemini's own call; the badge (recommendation) follows the score */
+  ai_recommendation?: Recommendation | null;
+  reason?: string | null;
+  reasons: string[];
+}
+
 export interface MatchItem {
   tender: Tender;
-  match: {
-    score: number;
-    reasons: string[];
-  };
+  match: TenderMatch;
   action: "saved" | "applied" | "discarded" | null;
+}
+
+export interface MatchNotification {
+  id: string;
+  tender_id: string;
+  bid_id: string;
+  title?: string;
+  score: number;
+  recommendation?: Recommendation | null;
+  end_date?: string | null;
+  read: boolean;
+  created_at: string;
+}
+
+export interface ScopeCategory {
+  name: string;
+  items: string[];
 }
 
 export interface Tender {
@@ -63,6 +109,29 @@ export interface Tender {
     required_certifications?: string[];
     estimated_value?: string;
     eligibility_criteria?: Record<string, unknown>;
+    // Tender brief (extraction v2)
+    buyer?: string;
+    sector?: string;
+    procurement_type?: string;
+    what_is_being_bought?: string;
+    scope_items?: string[];
+    scope_categories?: ScopeCategory[];
+    required_products_or_services?: string[];
+    min_avg_turnover?: string;
+    min_experience_years?: number;
+    similar_work_required?: string;
+    eligibility_requirements?: string[];
+    preferences?: string[];
+    evaluation?: string[];
+    key_dates?: {
+      pre_bid_queries?: string | null;
+      pre_bid_meeting?: string | null;
+      bid_submission?: string | null;
+      bid_opening?: string | null;
+    };
+    emd_amount?: string;
+    contract_period?: string;
+    infrastructure_notes?: string[];
   };
 }
 

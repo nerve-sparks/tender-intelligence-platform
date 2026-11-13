@@ -97,10 +97,10 @@ async def download_tender_document(
     _current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = TenderService(db)
-    path = await service.get_download_path(tender_id)
-    if not path or not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Tender document unavailable")
-    return FileResponse(path=path, filename=os.path.basename(path), media_type="application/pdf")
+    document = await service.get_download(tender_id)
+    if not document or not os.path.exists(document["path"]):
+        raise HTTPException(status_code=404, detail="Tender document unavailable on GeM")
+    return FileResponse(path=document["path"], filename=document["filename"], media_type="application/pdf")
 
 
 @router.post("/{tender_id}/reprocess", response_model=Dict[str, Any])

@@ -26,7 +26,7 @@ const TendersPage = () => {
       q: search || undefined,
       time_period: timePeriod,
       sort,
-      min_score: 0.8,
+      min_score: 0.7,
       page,
       limit: 5,
     }),
@@ -84,7 +84,7 @@ const TendersPage = () => {
               onChange={(event) => setSort(event.target.value)}
               className="h-10 rounded border border-[#d3d7e2] bg-white px-3 text-sm"
             >
-              <option value="best_match">Best Match (&gt;80%)</option>
+              <option value="best_match">Best Match (&ge;70%)</option>
               <option value="latest">Latest</option>
             </select>
           </div>

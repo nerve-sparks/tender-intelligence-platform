@@ -72,7 +72,8 @@ class InMemoryCollection:
         matched = [copy.deepcopy(item) for item in self.docs if _matches(item, filters or {})]
         return InMemoryCursor(matched)
 
-    async def find_one(self, filters: Optional[Dict[str, Any]] = None, sort=None):
+    async def find_one(self, filters: Optional[Dict[str, Any]] = None, projection=None, sort=None):
+        # `projection` is accepted for signature parity with Motor and ignored (full docs returned).
         matched = [copy.deepcopy(item) for item in self.docs if _matches(item, filters or {})]
         if sort:
             key, direction = sort[0]
@@ -229,3 +230,11 @@ def event_loop():
 @pytest.fixture
 def fake_db():
     return InMemoryDB()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_rematch(monkeypatch):
+    """Never fire background LLM relevance refreshes from tests."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MATCH_AUTO_REFRESH", False)

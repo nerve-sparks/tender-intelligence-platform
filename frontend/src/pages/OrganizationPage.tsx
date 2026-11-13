@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import OfferingProfileEditor from "@/components/companies/OfferingProfileEditor";
 import { useToastSimple } from "@/components/ui/toaster-simple";
 import { getCompanyId } from "@/lib/auth";
 import { deleteCompanyDocument, fetchCompanyProfile, processCompanyProfile } from "@/services/tenderAgentApi";
@@ -70,6 +71,8 @@ const OrganizationPage = () => {
           Reprocess Profile
         </button>
       </div>
+
+      <OfferingProfileEditor company={company} />
 
       <div className="rounded-xl border border-[#d8dce6] bg-white p-5">
         <h2 className="text-xl font-semibold text-[#2b3040] md:text-2xl">Uploaded Documents</h2>

@@ -26,6 +26,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],  # lets the browser read the bid document filename
 )
 
 app.include_router(tenders.router, prefix="/api/v1")

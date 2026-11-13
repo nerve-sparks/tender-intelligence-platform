@@ -81,6 +81,13 @@ async def create_indexes(db: Optional[AsyncIOMotorDatabase] = None) -> None:
     await chats_coll.create_index([("company_id", ASCENDING), ("tender_id", ASCENDING)])
     await chats_coll.create_index([("updated_at", DESCENDING)])
 
+    matches_coll = database.get_collection("tender_matches")
+    await matches_coll.create_index([("company_id", ASCENDING), ("tender_id", ASCENDING)], unique=True)
+
+    notifications_coll = database.get_collection("notifications")
+    await notifications_coll.create_index([("company_id", ASCENDING), ("tender_id", ASCENDING)], unique=True)
+    await notifications_coll.create_index([("company_id", ASCENDING), ("created_at", DESCENDING)])
+
     share_logs = database.get_collection("share_logs")
     await share_logs.create_index([("company_id", ASCENDING), ("created_at", DESCENDING)])
     await share_logs.create_index([("tender_id", ASCENDING)])
