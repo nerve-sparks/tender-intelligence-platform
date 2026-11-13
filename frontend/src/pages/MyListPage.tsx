@@ -23,7 +23,7 @@ const MyListPage = () => {
       .filter((entry: any) => entry.tender)
       .map((entry: any) => ({
         tender: entry.tender,
-        match: { score: 0.95, reasons: [] },
+        match: entry.match || { score: 0, verified: false, reasons: [] },
         action: entry.action,
       }));
   }, [data]);

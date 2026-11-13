@@ -1,503 +1,391 @@
 """
-Matching utilities for improved tender-company matching.
-Provides semantic matching, synonym handling, and fuzzy matching capabilities.
+Profile-driven matching utilities.
+
+Nothing in this module is specific to any company or industry: every term that
+counts towards a match comes from the company's own extracted profile
+(capabilities, offerings, technologies, domains, interest tags) and every
+exclusion comes from the profile's own `excluded_capabilities` /
+`preferred_procurement_types`.
+
+This module provides the cheap, deterministic stage of matching:
+  1. `hard_gate`          - profile-driven yes/no checkpoint (procurement type, exclusions)
+  2. `quick_match_score`  - capped keyword/vector pre-score used for ranking candidates
+                            before the LLM relevance judgment, and as a fallback when
+                            no judgment exists yet.
+  3. `check_eligibility`  - turnover / experience criteria vs the profile.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-# Domain synonyms and related terms mapping - PRECISE coverage to avoid false matches
-DOMAIN_SYNONYMS: Dict[str, Set[str]] = {
-    # Audio Visual related - REMOVED short terms like "av" to avoid false matches
-    "audio visual": {"audiovisual", "audio visual system", "audio-visual", "audiovisual equipment", "audio video system"},
-    "audiovisual equipment": {"audio visual", "audio visual system", "audio-visual", "audiovisual"},
-    "audio visual system": {"audio visual", "audiovisual", "audiovisual equipment", "audio-visual"},
+# A tender that has not been verified by the LLM relevance judgment can never
+# score above this value, so unverified results cannot look like 90%+ matches.
+QUICK_SCORE_CAP = 0.6
 
-    # LED/Display related - specific to LED walls, not generic LED
-    "led wall": {"led walls", "led display wall", "video wall", "led video wall"},
-    "led walls": {"led wall", "led display wall", "video wall", "led video wall"},
-    "video wall": {"led wall", "led walls", "led display wall", "display wall"},
-    "led display": {"led screen", "led panel", "digital display panel"},
-    "digital signage": {"led signage", "electronic signage", "digital display signage"},
-
-    # Projector related
-    "projector": {"projectors", "projection system", "projection equipment", "lcd projector", "dlp projector", "video projector"},
-    "projectors": {"projector", "projection system", "projection equipment"},
-    "projection system": {"projector", "projectors", "projection equipment"},
-
-    # Museum/Memorial related
-    "museum": {"museums", "memorial museum", "heritage museum"},
-    "museums": {"museum", "memorial museum", "heritage museum"},
-    "memorial": {"memorials", "national memorial", "war memorial", "monument"},
-    "memorials": {"memorial", "national memorial", "monuments"},
-    "national memorials": {"memorial", "memorials", "national memorial", "monuments"},
-    "heritage": {"heritage site", "cultural heritage", "historical"},
-    "archaeology": {"archaeological", "heritage", "historical"},
-
-    # Government related - more specific
-    "government infrastructure": {"govt infrastructure", "public infrastructure", "government facility"},
-    "public sector": {"government sector", "govt sector"},
-
-    # Maintenance related - specific to AV/technical maintenance
-    "amc": {"annual maintenance contract", "maintenance contract"},
-    "annual maintenance": {"amc", "annual maintenance contract", "yearly maintenance"},
+# Words that carry no information about *what* is being bought. They are
+# ignored when comparing profile phrases with tender text, so that e.g. the
+# word "software" or "government" alone can never produce a match.
+GENERIC_WORDS: Set[str] = {
+    "a", "an", "and", "the", "of", "for", "to", "in", "on", "at", "by", "with", "from", "into", "or", "as",
+    "is", "are", "be", "this", "that", "its", "their", "our", "all", "any", "other", "etc", "via",
+    "service", "services", "solution", "solutions", "system", "systems", "software", "technology",
+    "technologies", "tech", "it", "digital", "platform", "platforms", "product", "products",
+    "supply", "supplies", "provision", "providing", "provider", "management", "support", "maintenance",
+    "development", "implementation", "work", "works", "project", "projects", "operation", "operations",
+    "government", "govt", "public", "sector", "department", "ministry", "organisation", "organization",
+    "enterprise", "business", "industry", "industrial", "general", "various", "related", "based",
+    "including", "include", "item", "items", "goods", "equipment", "contract", "annual", "comprehensive",
+    "new", "custom", "end", "complete", "integrated", "advanced", "smart", "india", "indian", "national",
 }
 
-# Technology synonyms - PRECISE to avoid false matches
-TECH_SYNONYMS: Dict[str, Set[str]] = {
-    "audio visual system": {"audiovisual system", "audio-visual system", "audio video system"},
-    "led walls": {"led wall", "video wall", "led display wall", "led video wall"},
-    "led wall": {"led walls", "video wall", "led display wall"},
-    "projector": {"projectors", "projection system", "video projector", "lcd projector", "dlp projector"},
-    "projectors": {"projector", "projection system"},
-    "interactive panels": {"interactive display", "touch panel", "smart board", "interactive whiteboard"},
-}
+# Canonical procurement types produced by the tender/company extraction prompts.
+PROCUREMENT_TYPES = {"goods", "services", "works", "software", "consulting", "mixed"}
 
-# Capability to tender requirement mapping - SPECIFIC keywords only
-CAPABILITY_KEYWORDS: Dict[str, List[str]] = {
-    "av maintenance": ["audio visual maintenance", "audiovisual maintenance", "projector maintenance", "led wall maintenance"],
-    "led wall": ["led wall", "led walls", "video wall", "led display wall"],
-    "projector": ["projector", "projectors", "projection system", "projection equipment"],
-    "audio visual": ["audio visual", "audiovisual", "audio-visual", "audio video"],
-    "content production": ["content production", "media production", "video production"],
-    "memorial maintenance": ["memorial maintenance", "museum maintenance", "heritage site maintenance"],
+# A company that lists the key in preferred_procurement_types accepts these tender types.
+PROCUREMENT_COMPATIBILITY: Dict[str, Set[str]] = {
+    "goods": {"goods"},
+    "works": {"works"},
+    "services": {"services", "software", "consulting"},
+    "software": {"software", "services"},
+    "consulting": {"consulting", "services"},
 }
 
 
-def normalize_text(text: str) -> str:
-    """Normalize text for comparison."""
+def normalize_text(text: Any) -> str:
+    """Lowercase, collapse separators and strip punctuation."""
     if not text:
         return ""
-    # Convert to lowercase, remove extra whitespace, normalize separators
-    text = text.lower().strip()
-    text = re.sub(r'[\s\-_/]+', ' ', text)
-    text = re.sub(r'[^\w\s]', '', text)
-    return text
+    text = str(text).lower().strip()
+    text = re.sub(r"[\s\-_/]+", " ", text)
+    text = re.sub(r"[^\w\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def expand_with_synonyms(terms: List[str]) -> Set[str]:
-    """Expand a list of terms with their synonyms. STRICT matching to avoid false positives."""
-    expanded = set()
-
-    # Common words to ignore when checking word overlap
-    IGNORE_WORDS = {
-        "system", "systems", "service", "services", "equipment", "contract",
-        "management", "maintenance", "support", "solution", "solutions",
-        "infrastructure", "technology", "technologies", "annual", "comprehensive"
-    }
-
-    for term in terms:
-        norm_term = normalize_text(term)
-        expanded.add(norm_term)
-
-        # Add individual MEANINGFUL words only (not common words)
-        for word in norm_term.split():
-            if len(word) > 4 and word not in IGNORE_WORDS:
-                expanded.add(word)
-
-        # Add direct synonyms - STRICT matching only
-        for key, synonyms in DOMAIN_SYNONYMS.items():
-            norm_key = normalize_text(key)
-            norm_synonyms = {normalize_text(s) for s in synonyms}
-
-            # Exact match only
-            if norm_term == norm_key or norm_term in norm_synonyms:
-                expanded.add(norm_key)
-                expanded.update(norm_synonyms)
-            # Partial match - but only if the key phrase is FULLY contained
-            elif len(norm_key) > 6 and norm_key in norm_term:
-                expanded.add(norm_key)
-                expanded.update(norm_synonyms)
-
-        # Add technology synonyms - STRICT matching only
-        for key, synonyms in TECH_SYNONYMS.items():
-            norm_key = normalize_text(key)
-            norm_synonyms = {normalize_text(s) for s in synonyms}
-
-            # Exact match
-            if norm_term == norm_key or norm_term in norm_synonyms:
-                expanded.add(norm_key)
-                expanded.update(norm_synonyms)
-            # Partial match - only if key is FULLY contained (not just word overlap)
-            elif len(norm_key) > 6 and norm_key in norm_term:
-                expanded.add(norm_key)
-                expanded.update(norm_synonyms)
-
-    return expanded
+def _stem(word: str) -> str:
+    """Very light stemming so 'medicines' == 'medicine', 'analytics' stays useful."""
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
 
 
-def fuzzy_match_score(str1: str, str2: str) -> float:
-    """Calculate fuzzy match score between two strings."""
-    s1 = normalize_text(str1)
-    s2 = normalize_text(str2)
-
-    if not s1 or not s2:
-        return 0.0
-
-    if s1 == s2:
-        return 1.0
-
-    # Check if one contains the other
-    if s1 in s2 or s2 in s1:
-        return 0.8
-
-    # Check word overlap
-    words1 = set(s1.split())
-    words2 = set(s2.split())
-
-    if not words1 or not words2:
-        return 0.0
-
-    overlap = words1.intersection(words2)
-    if overlap:
-        return len(overlap) / max(len(words1), len(words2))
-
-    return 0.0
+def significant_tokens(text: Any) -> Set[str]:
+    """Meaningful, stemmed tokens of a text (generic words removed)."""
+    tokens = set()
+    for word in normalize_text(text).split():
+        if word in GENERIC_WORDS or len(word) < 2 or word.isdigit():
+            continue
+        tokens.add(_stem(word))
+    return tokens
 
 
-def semantic_overlap_score(
-    tender_values: List[str],
-    profile_values: List[str],
-) -> Tuple[float, List[str]]:
-    """
-    Calculate semantic overlap between tender requirements and company profile.
-    Returns score and list of matched terms.
-    """
-    if not tender_values or not profile_values:
-        return 0.0, []
-
-    # Expand both with synonyms
-    tender_expanded = expand_with_synonyms(tender_values)
-    profile_expanded = expand_with_synonyms(profile_values)
-
-    # Direct overlap after synonym expansion
-    direct_overlap = tender_expanded.intersection(profile_expanded)
-
-    # Word-level overlap (for partial matches)
-    tender_words = set()
-    profile_words = set()
-    for term in tender_expanded:
-        tender_words.update(term.split())
-    for term in profile_expanded:
-        profile_words.update(term.split())
-
-    # Remove common short words
-    stop_words = {"and", "the", "for", "with", "from", "into"}
-    tender_words -= stop_words
-    profile_words -= stop_words
-
-    word_overlap = tender_words.intersection(profile_words)
-    # Filter to meaningful words (length > 3)
-    word_overlap = {w for w in word_overlap if len(w) > 3}
-
-    # Fuzzy matching for non-direct matches
-    fuzzy_matches = []
-    for t_term in tender_expanded:
-        for p_term in profile_expanded:
-            if t_term not in direct_overlap and p_term not in direct_overlap:
-                score = fuzzy_match_score(t_term, p_term)
-                if score >= 0.5:  # Lowered threshold
-                    fuzzy_matches.append((t_term, p_term, score))
-
-    # Calculate final score with multiple components
-    direct_score = len(direct_overlap) / max(len(tender_values), 1) * 0.5
-    word_score = len(word_overlap) / max(len(tender_words), 1) * 0.3
-    fuzzy_score = sum(m[2] for m in fuzzy_matches) / max(len(tender_values), 1) * 0.2 if fuzzy_matches else 0
-
-    total_score = min(direct_score + word_score + fuzzy_score, 1.0)
-
-    # Boost if we have strong matches
-    if len(direct_overlap) >= 2 or len(word_overlap) >= 3:
-        total_score = min(total_score * 1.5, 1.0)
-
-    # Collect matched terms for explanation
-    matched_terms = list(direct_overlap)[:5]
-    if word_overlap:
-        matched_terms.append(f"words: {', '.join(list(word_overlap)[:3])}")
-    matched_terms.extend([f"{m[0]}~{m[1]}" for m in fuzzy_matches[:2]])
-
-    return total_score, matched_terms[:5]
+_FILLER_WORDS = {"a", "an", "and", "the", "of", "for", "to", "in", "on", "at", "by", "with", "from", "or", "as", "etc"}
 
 
-def extract_keywords_from_text(text: str) -> Set[str]:
-    """Extract relevant keywords from text."""
-    if not text:
-        return set()
-
-    text = normalize_text(text)
-    keywords = set()
-
-    # Check for capability keywords
-    for capability, terms in CAPABILITY_KEYWORDS.items():
-        for term in terms:
-            if term in text:
-                keywords.add(capability)
-                break
-
-    # Check for domain keywords
-    for domain in DOMAIN_SYNONYMS.keys():
-        if normalize_text(domain) in text:
-            keywords.add(normalize_text(domain))
-
-    return keywords
+def all_tokens(text: Any) -> Set[str]:
+    """All stemmed tokens except grammatical filler (keeps words like 'management', 'supply')."""
+    return {_stem(w) for w in normalize_text(text).split() if w not in _FILLER_WORDS and len(w) >= 2}
 
 
-def capability_match_score(
-    tender_summary: str,
-    tender_title: str,
-    company_capabilities: List[str],
-) -> Tuple[float, List[str]]:
-    """
-    Match company capabilities against tender requirements extracted from text.
-    Uses STRICT phrase matching to avoid false positives.
-    """
-    if not company_capabilities:
-        return 0.0, []
-
-    tender_text = normalize_text(f"{tender_title} {tender_summary}")
-    matches = []
-    score = 0.0
-
-    # Define specific capability phrases to look for (not generic words)
-    specific_phrases = {
-        "audio visual": ["audio visual", "audiovisual", "audio-visual", "av system"],
-        "led wall": ["led wall", "led walls", "video wall", "led display wall"],
-        "projector": ["projector", "projectors", "projection system", "projection equipment"],
-        "maintenance": ["annual maintenance", "amc", "comprehensive maintenance", "maintenance contract"],
-        "content production": ["content production", "media production", "video production"],
-        "museum": ["museum", "museums", "memorial", "memorials", "heritage"],
-    }
-
-    # Check each capability for specific phrase matches
-    for cap in company_capabilities:
-        cap_lower = normalize_text(cap)
-        for category, phrases in specific_phrases.items():
-            # Check if capability relates to this category
-            if any(phrase in cap_lower for phrase in phrases):
-                # Check if tender text mentions this category
-                for phrase in phrases:
-                    if phrase in tender_text:
-                        matches.append(f"{category}:{phrase}")
-                        score += 0.25
-                        break
-
-    # Cap score and deduplicate matches
-    unique_matches = list(set(matches))
-    return min(score, 1.0), unique_matches[:4]
+def _as_list(value: Any) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        out: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict):
+                out.extend(str(v) for v in item.values() if isinstance(v, str))
+        return out
+    return [str(value)]
 
 
-def text_keyword_match_score(
-    tender_text: str,
-    profile_meta: Dict,
-) -> Tuple[float, List[str]]:
-    """
-    Match company profile keywords against tender text (title + summary).
-    This catches matches that structured metadata might miss.
-    Uses STRICT matching to avoid false positives.
-    """
-    if not tender_text:
-        return 0.0, []
-
-    tender_text_lower = normalize_text(tender_text)
-    matched_keywords = []
-    total_keywords = 0
-
-    # Check profile domains in tender text - require longer matches
-    for domain in profile_meta.get("domains", []):
-        domain_norm = normalize_text(domain)
-        # Only match if the full domain phrase or significant portion is found
-        if len(domain_norm) > 5 and domain_norm in tender_text_lower:
-            matched_keywords.append(f"domain:{domain}")
-            total_keywords += 1
-        # Also check synonyms but require longer matches
-        domain_expanded = expand_with_synonyms([domain])
-        for term in domain_expanded:
-            if len(term) > 8 and term in tender_text_lower:  # Require longer terms
-                matched_keywords.append(f"domain:{term}")
-                total_keywords += 1
-                break
-
-    # Check profile technologies in tender text - require exact technology name
-    for tech in profile_meta.get("technologies", []):
-        tech_norm = normalize_text(tech)
-        if len(tech_norm) > 5 and tech_norm in tender_text_lower:
-            matched_keywords.append(f"tech:{tech}")
-            total_keywords += 1
-
-    # Check specific capability phrases in tender text
-    capability_phrases = [
-        "audio visual", "audiovisual", "led wall", "led walls", "video wall",
-        "projector", "projectors", "projection", "memorial", "museum"
+def tender_core_text(tender_meta: Dict[str, Any], scraped_info: Optional[Dict[str, Any]] = None) -> str:
+    """Text describing *what is actually being purchased* (not boilerplate)."""
+    parts: List[str] = [
+        tender_meta.get("title") or "",
+        tender_meta.get("what_is_being_bought") or "",
     ]
-    for phrase in capability_phrases:
-        if phrase in tender_text_lower:
-            matched_keywords.append(f"phrase:{phrase}")
-            total_keywords += 1
-
-    if total_keywords == 0:
-        return 0.0, []
-
-    # Score based on quality of matches
-    score = min(len(matched_keywords) * 0.2, 1.0)
-    return score, matched_keywords[:5]
+    parts += _as_list(tender_meta.get("required_products_or_services"))
+    parts += _as_list(tender_meta.get("scope_items"))
+    for category in tender_meta.get("scope_categories") or []:
+        if isinstance(category, dict):
+            parts.append(str(category.get("name") or ""))
+            parts += _as_list(category.get("items"))
+    if scraped_info:
+        parts.append(scraped_info.get("items") or "")
+    return " ".join(p for p in parts if p)
 
 
-def cross_match_domains_and_text(
-    tender_meta: Dict,
-    profile_meta: Dict,
-) -> Tuple[float, List[str]]:
+def tender_full_text(tender_meta: Dict[str, Any], scraped_info: Optional[Dict[str, Any]] = None) -> str:
+    parts = [tender_core_text(tender_meta, scraped_info), tender_meta.get("summary") or ""]
+    parts += _as_list(tender_meta.get("required_technologies"))
+    parts += _as_list(tender_meta.get("domains"))
+    return " ".join(p for p in parts if p)
+
+
+def profile_offering_phrases(profile_meta: Dict[str, Any], interest_tags: Optional[List[str]] = None) -> List[str]:
+    """All phrases describing what the company offers, from its own profile."""
+    phrases: List[str] = []
+    for key in ("core_capabilities", "offerings", "capabilities", "technologies", "domains"):
+        phrases += _as_list(profile_meta.get(key))
+    phrases += _as_list(interest_tags)
+    seen: Set[str] = set()
+    unique: List[str] = []
+    for phrase in phrases:
+        norm = normalize_text(phrase)
+        if norm and norm not in seen:
+            seen.add(norm)
+            unique.append(phrase)
+    return unique
+
+
+def _phrase_hits(phrase: str, tender_tokens: Set[str], min_coverage: float) -> bool:
+    tokens = significant_tokens(phrase)
+    if not tokens:
+        return False
+    covered = len(tokens & tender_tokens) / len(tokens)
+    return covered >= min_coverage
+
+
+def normalize_procurement_type(value: Any) -> Optional[str]:
+    norm = normalize_text(value)
+    if not norm:
+        return None
+    if norm in PROCUREMENT_TYPES:
+        return norm
+    aliases = {
+        "product": "goods", "products": "goods", "supply": "goods", "material": "goods",
+        "service": "services", "it services": "services", "professional services": "services",
+        "technology services": "services", "consultancy": "consulting", "advisory": "consulting",
+        "civil works": "works", "construction": "works", "work": "works",
+        "software development": "software", "it": "software",
+    }
+    if norm in aliases:
+        return aliases[norm]
+    for key, mapped in aliases.items():
+        if key in norm:
+            return mapped
+    return None
+
+
+def hard_gate(tender_meta: Dict[str, Any], profile_meta: Dict[str, Any], scraped_info: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
-    Cross-match tender domains with profile tech/capabilities and vice versa.
-    This catches when a tender domain matches company technology.
-    Uses STRICT matching to avoid false positives.
+    Profile-driven yes/no checkpoint. Returns a human-readable rejection reason,
+    or None if the tender may proceed to scoring.
     """
-    matches = []
-    score = 0.0
+    # 1. Procurement type must be one the company actually takes on.
+    tender_type = normalize_procurement_type(tender_meta.get("procurement_type"))
+    preferred = {
+        t for t in (normalize_procurement_type(v) for v in _as_list(profile_meta.get("preferred_procurement_types"))) if t
+    }
+    if tender_type and tender_type != "mixed" and preferred:
+        accepted: Set[str] = set()
+        for pref in preferred:
+            accepted |= PROCUREMENT_COMPATIBILITY.get(pref, {pref})
+        if tender_type not in accepted:
+            return (
+                f"Procurement type is '{tender_type}', but the company profile takes on "
+                f"{', '.join(sorted(preferred))} only"
+            )
 
-    # Check if tender domains match profile technologies - require meaningful overlap
-    tender_domains = set(normalize_text(d) for d in tender_meta.get("domains", []))
-    profile_techs = set(normalize_text(t) for t in profile_meta.get("technologies", []))
-
-    # Check for direct phrase containment (not just word overlap)
-    for td in tender_domains:
-        for pt in profile_techs:
-            # Check if tech is contained in domain or vice versa
-            if len(pt) > 8 and (pt in td or td in pt):
-                matches.append(f"domain-tech:{pt}")
-                score += 0.3
-            # Check if they share significant words
-            td_words = set(td.split())
-            pt_words = set(pt.split())
-            common = td_words.intersection(pt_words)
-            # Require meaningful words (not just 'and', 'the', etc.)
-            meaningful_common = {w for w in common if len(w) > 4}
-            if len(meaningful_common) >= 2:
-                matches.append(f"domain-tech-words:{', '.join(meaningful_common)}")
-                score += 0.2
-
-    # Check if specific profile domains appear in tender text
-    tender_text = f"{tender_meta.get('title', '')} {tender_meta.get('summary', '')}"
-    tender_text_norm = normalize_text(tender_text)
-
-    # Only check for significant profile domain terms
-    important_profile_terms = ["museum", "memorial", "heritage", "archaeology", "audio visual", "audiovisual", "led wall", "projector"]
-    for domain in profile_meta.get("domains", []):
-        domain_norm = normalize_text(domain)
-        for term in important_profile_terms:
-            if term in domain_norm and term in tender_text_norm:
-                matches.append(f"profile-domain-in-text:{term}")
-                score += 0.3
-                break
-
-    return min(score, 1.0), matches[:3]
+    # 2. What is being bought must not be something the company excludes.
+    #    Every word of the exclusion phrase (generic words included) must appear, otherwise
+    #    "Event management" would shrink to "event" and reject e.g. "event-driven analytics".
+    core_tokens = all_tokens(tender_core_text(tender_meta, scraped_info))
+    if core_tokens:
+        for excluded in _as_list(profile_meta.get("excluded_capabilities")):
+            phrase_tokens = all_tokens(excluded)
+            if phrase_tokens and phrase_tokens <= core_tokens:
+                return f"Tender requires '{excluded}', which the company profile excludes"
+    return None
 
 
+def normalize_vector_similarity(value: float) -> float:
+    """Map raw cosine similarity of sentence embeddings (~0.3 unrelated .. ~0.8 close) to 0..1."""
+    return max(0.0, min(1.0, (float(value or 0.0) - 0.3) / 0.5))
+
+
+def quick_match_score(
+    tender_meta: Dict[str, Any],
+    profile_meta: Dict[str, Any],
+    vector_similarity: float,
+    interest_tags: Optional[List[str]] = None,
+    scraped_info: Optional[Dict[str, Any]] = None,
+) -> Tuple[float, List[str], Optional[str]]:
+    """
+    Cheap pre-score. Returns (score, reasons, rejection_reason).
+    Score is capped at QUICK_SCORE_CAP because it is not a business judgment.
+    """
+    rejection = hard_gate(tender_meta, profile_meta, scraped_info)
+    if rejection:
+        return 0.0, [rejection], rejection
+
+    tender_tokens = significant_tokens(tender_full_text(tender_meta, scraped_info))
+    hits = [p for p in profile_offering_phrases(profile_meta, interest_tags) if _phrase_hits(p, tender_tokens, 0.6)]
+
+    keyword_part = min(len(hits) / 3.0, 1.0)
+    vector_part = normalize_vector_similarity(vector_similarity)
+    score = min(0.6 * keyword_part + 0.4 * vector_part, QUICK_SCORE_CAP)
+
+    reasons: List[str] = []
+    if hits:
+        reasons.append(f"Profile terms found in tender: {', '.join(hits[:4])}")
+    return round(score, 4), reasons, None
+
+
+# Backwards-compatible name used by search_service.
 def calculate_enhanced_match_score(
-    tender_meta: Dict,
-    profile_meta: Dict,
+    tender_meta: Dict[str, Any],
+    profile_meta: Dict[str, Any],
     vector_similarity: float,
 ) -> Tuple[float, List[str]]:
+    score, reasons, _ = quick_match_score(tender_meta, profile_meta, vector_similarity)
+    return score, reasons
+
+
+# ---------------------------------------------------------------------------
+# Eligibility (turnover / experience) - deterministic, from extracted numbers.
+# ---------------------------------------------------------------------------
+
+_UNIT_MULTIPLIERS = [
+    (r"(crores?|cr)\b", 1e7),
+    (r"(lakhs?|lacs?|lac|l)\b", 1e5),
+    (r"(millions?|mn|m)\b", 1e6),
+    (r"(billions?|bn)\b", 1e9),
+    (r"(thousands?|k)\b", 1e3),
+]
+
+
+def parse_inr(value: Any) -> Optional[float]:
+    """Parse amounts like '₹4.93 Crore', '50 Lakh', '₹ 1,84,93,108', 49300000 into rupees."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    text = str(value).lower().replace(",", "")
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([a-z]*)", text.replace("₹", " ").replace("rs.", " ").replace("inr", " "))
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = match.group(2) or ""
+    for pattern, multiplier in _UNIT_MULTIPLIERS:
+        if unit and re.fullmatch(pattern.replace(r"\b", ""), unit):
+            return number * multiplier
+    return number if number > 0 else None
+
+
+def format_inr(amount: Optional[float]) -> str:
+    if not amount:
+        return "unknown"
+    if amount >= 1e7:
+        return f"₹{amount / 1e7:.2f} Cr"
+    if amount >= 1e5:
+        return f"₹{amount / 1e5:.2f} L"
+    return f"₹{amount:,.0f}"
+
+
+def _first_number(*values: Any) -> Optional[float]:
+    for value in values:
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+        match = re.search(r"\d+(?:\.\d+)?", str(value))
+        if match:
+            return float(match.group(0))
+    return None
+
+
+_STARTUP_HINTS = ("dpiit", "startup india", "start-up india", "recognised startup", "recognized startup")
+_MSE_HINTS = ("msme", "udyam", "micro and small", "micro or small", "small enterprise", "nsic", "mse")
+
+
+def company_relaxation_status(profile_meta: Dict[str, Any]) -> Dict[str, bool]:
+    """Is the company a DPIIT startup / registered MSE? Explicit flags first, then its registrations."""
+    registrations = " ".join(_as_list(profile_meta.get("registrations"))).lower()
+
+    def flag(key: str, hints: tuple) -> bool:
+        value = profile_meta.get(key)
+        if isinstance(value, bool):
+            return value
+        return any(hint in registrations for hint in hints)
+
+    return {"startup": flag("is_dpiit_startup", _STARTUP_HINTS), "mse": flag("is_mse", _MSE_HINTS)}
+
+
+def _relaxed(tender_meta: Dict[str, Any], company: Dict[str, bool], criterion: str) -> Optional[str]:
+    """Which relaxation (if any) waives `criterion` ("experience" / "turnover") for this company."""
+    if company["startup"] and (tender_meta.get("startup_relaxation") or {}).get(criterion):
+        return "Startup relaxation"
+    if company["mse"] and (tender_meta.get("mse_relaxation") or {}).get(criterion):
+        return "MSE relaxation"
+    return None
+
+
+def check_eligibility(
+    tender_meta: Dict[str, Any],
+    profile_meta: Dict[str, Any],
+    profile_experience_years: Optional[float] = None,
+) -> Dict[str, Any]:
     """
-    Calculate enhanced match score using multiple factors.
-
-    Returns:
-        Tuple of (final_score, match_reasons)
+    Compare the tender's bidder criteria with the company profile, honouring the GeM
+    Startup / MSE relaxations stated in the bid.
+    Returns {"fit": "MET" | "NOT_MET" | "UNKNOWN", "score": 0..1, "checks": [...]}.
+    Check status is "met", "not_met", "unknown" or "exempt" (waived by a relaxation).
     """
-    reasons = []
-    scores = {}
+    criteria = tender_meta.get("eligibility_criteria") or {}
+    company = company_relaxation_status(profile_meta)
+    checks: List[Dict[str, Any]] = []
 
-    # 1. Domain matching with synonyms (weight: 0.20)
-    domain_score, domain_matches = semantic_overlap_score(
-        tender_meta.get("domains", []),
-        profile_meta.get("domains", [])
+    def add_check(label: str, criterion: str, required: str, company_value: str, status: str) -> None:
+        relaxation = _relaxed(tender_meta, company, criterion) if status != "met" else None
+        checks.append(
+            {
+                "label": label,
+                "required": required,
+                "company": f"{company_value} ({relaxation})" if relaxation else company_value,
+                "status": "exempt" if relaxation else status,
+            }
+        )
+
+    required_turnover = parse_inr(tender_meta.get("min_avg_turnover") or criteria.get("min_turnover"))
+    company_turnover = parse_inr(profile_meta.get("annual_turnover_inr") or profile_meta.get("annual_turnover"))
+    if required_turnover:
+        status = "unknown"
+        if company_turnover:
+            status = "met" if company_turnover >= required_turnover else "not_met"
+        add_check(
+            "Minimum average annual turnover", "turnover",
+            format_inr(required_turnover), format_inr(company_turnover), status,
+        )
+
+    required_years = _first_number(
+        tender_meta.get("min_experience_years"),
+        tender_meta.get("required_experience_years"),
+        criteria.get("min_experience_years"),
     )
-    scores["domain"] = domain_score
-    if domain_matches:
-        reasons.append(f"Domain match: {', '.join(domain_matches[:3])}")
+    company_years = _first_number(profile_experience_years, profile_meta.get("years_in_business"))
+    if required_years:
+        status = "unknown"
+        if company_years is not None:
+            status = "met" if company_years >= required_years else "not_met"
+        add_check(
+            "Past experience", "experience", f"{required_years:g} years",
+            f"{company_years:g} years" if company_years is not None else "unknown", status,
+        )
 
-    # 2. Technology matching with synonyms (weight: 0.20)
-    tech_score, tech_matches = semantic_overlap_score(
-        tender_meta.get("required_technologies", []),
-        profile_meta.get("technologies", [])
-    )
-    scores["technology"] = tech_score
-    if tech_matches:
-        reasons.append(f"Technology match: {', '.join(tech_matches[:3])}")
-
-    # 3. Certification matching (weight: 0.10)
-    cert_score, cert_matches = semantic_overlap_score(
-        tender_meta.get("required_certifications", []),
-        profile_meta.get("certifications", [])
-    )
-    scores["certification"] = cert_score
-    if cert_matches:
-        reasons.append(f"Certification match: {', '.join(cert_matches[:2])}")
-
-    # 4. Capability matching from text (weight: 0.15)
-    cap_score, cap_matches = capability_match_score(
-        tender_meta.get("summary", ""),
-        tender_meta.get("title", ""),
-        profile_meta.get("capabilities", [])
-    )
-    scores["capability"] = cap_score
-    if cap_matches:
-        reasons.append(f"Capability match: {', '.join(cap_matches[:3])}")
-
-    # 5. Text keyword matching (weight: 0.15) - NEW
-    tender_text = f"{tender_meta.get('title', '')} {tender_meta.get('summary', '')}"
-    text_score, text_matches = text_keyword_match_score(tender_text, profile_meta)
-    scores["text_match"] = text_score
-    if text_matches:
-        reasons.append(f"Text match: {', '.join(text_matches[:3])}")
-
-    # 6. Cross-domain matching (weight: 0.10) - NEW
-    cross_score, cross_matches = cross_match_domains_and_text(tender_meta, profile_meta)
-    scores["cross_match"] = cross_score
-    if cross_matches:
-        reasons.append(f"Cross match: {', '.join(cross_matches[:2])}")
-
-    # 7. Government sector bonus (weight: 0.05)
-    govt_score = 0.0
-    if tender_meta.get("sector") and profile_meta.get("government_experience"):
-        govt_score = 1.0
-        reasons.append("Government sector experience")
-    scores["government"] = govt_score
-
-    # 8. Vector similarity (weight: 0.05)
-    scores["vector"] = vector_similarity
-
-    # Calculate weighted score
-    weights = {
-        "domain": 0.20,
-        "technology": 0.20,
-        "certification": 0.10,
-        "capability": 0.15,
-        "text_match": 0.15,
-        "cross_match": 0.10,
-        "government": 0.05,
-        "vector": 0.05,
-    }
-
-    # Calculate base weighted score
-    base_score = sum(scores[k] * weights[k] for k in weights)
-
-    # Dynamic boosting based on match quality
-    strong_matches = sum([
-        1 if scores["domain"] > 0.5 else 0,
-        1 if scores["technology"] > 0.5 else 0,
-        1 if scores["capability"] > 0.5 else 0,
-        1 if scores["text_match"] > 0.3 else 0,
-        1 if scores["cross_match"] > 0.3 else 0,
-    ])
-
-    # Boost score if multiple strong matches
-    if strong_matches >= 3:
-        final_score = min(base_score * 1.5, 1.0)
-    elif strong_matches >= 2:
-        final_score = min(base_score * 1.3, 1.0)
+    statuses = [c["status"] for c in checks]
+    if "not_met" in statuses:
+        fit, score = "NOT_MET", 0.0
+    elif statuses and all(s in ("met", "exempt") for s in statuses):
+        fit, score = "MET", 1.0
     else:
-        final_score = base_score
-
-    return min(final_score, 1.0), reasons
+        fit, score = "UNKNOWN", 0.5
+    return {"fit": fit, "score": score, "checks": checks}

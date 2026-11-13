@@ -4,9 +4,14 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 
+# Playwright's bundled Node driver needs libatomic1, which slim images no longer ship.
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && playwright install --with-deps chromium
+# Separate layers so a Playwright failure doesn't force a full pip reinstall.
+RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install --with-deps chromium
 
 COPY . ./
 

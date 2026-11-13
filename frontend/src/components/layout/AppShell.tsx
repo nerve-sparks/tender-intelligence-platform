@@ -1,8 +1,9 @@
 import { PropsWithChildren } from "react";
-import { Bell, ChevronDown, LogOut } from "lucide-react";
+import { ChevronDown, LogOut } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 
 import BrandMark from "@/components/layout/BrandMark";
+import NotificationBell from "@/components/layout/NotificationBell";
 import { clearAuth } from "@/lib/auth";
 
 const navItems = [
@@ -40,7 +41,7 @@ const AppShell = ({ children }: PropsWithChildren) => {
           </nav>
 
           <div className="flex items-center gap-4">
-            <Bell size={16} className="text-[#6a7186]" />
+            <NotificationBell />
             <button
               className="flex items-center gap-2 rounded-full border border-[#d6d9e3] bg-white px-2 py-1 text-xs text-[#5f6577]"
               onClick={() => {

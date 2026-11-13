@@ -1,6 +1,14 @@
 import api from "@/lib/api";
 import { AuthUser } from "@/lib/auth";
-import { CompanyProfile, DashboardReport, DashboardStats, MatchItem, Tender } from "@/types/tender-agent";
+import {
+  CompanyProfile,
+  DashboardReport,
+  DashboardStats,
+  MatchItem,
+  MatchNotification,
+  Tender,
+  TenderMatch,
+} from "@/types/tender-agent";
 
 type AuthResponse = { token: string; user: AuthUser };
 
@@ -112,6 +120,31 @@ export const fetchCompanyMatches = async (
   return data;
 };
 
+export const fetchTenderMatch = async (companyId: string, tenderId: string) => {
+  const { data } = await api.get<TenderMatch>(`/companies/${companyId}/tenders/${tenderId}/match`);
+  return data;
+};
+
+export const updateCompanyOffering = async (companyId: string, payload: Record<string, unknown>) => {
+  const { data } = await api.put<CompanyProfile>(`/companies/${companyId}/offering`, payload);
+  return data;
+};
+
+export const fetchNotifications = async (companyId: string) => {
+  const { data } = await api.get<{ items: MatchNotification[]; unread: number }>(`/companies/${companyId}/notifications`);
+  return data;
+};
+
+export const markNotificationsRead = async (companyId: string) => {
+  const { data } = await api.post(`/companies/${companyId}/notifications/read`);
+  return data;
+};
+
+export const rematchCompany = async (companyId: string) => {
+  const { data } = await api.post(`/companies/${companyId}/rematch`);
+  return data;
+};
+
 export const fetchTenderDetail = async (tenderId: string) => {
   const { data } = await api.get<Tender>(`/tenders/${tenderId}`);
   return data;
@@ -153,7 +186,21 @@ export const shareTenderByEmail = async (
   return data;
 };
 
-export const downloadTenderUrl = (tenderId: string) => {
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
-  return `${baseUrl}/tenders/${tenderId}/download`;
+/**
+ * Download the original GeM bid document. The endpoint needs the login token, which a plain
+ * <a href> cannot send, so the file is fetched through the API client and saved as a blob.
+ */
+export const downloadTenderDocument = async (tenderId: string, bidId?: string) => {
+  const response = await api.get(`/tenders/${tenderId}/download`, { responseType: "blob" });
+  const disposition = String(response.headers["content-disposition"] || "");
+  const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  const filename = match ? decodeURIComponent(match[1]) : `${(bidId || tenderId).replace(/\//g, "_")}.pdf`;
+  const url = URL.createObjectURL(new Blob([response.data], { type: "application/pdf" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 };

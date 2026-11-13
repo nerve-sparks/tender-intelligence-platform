@@ -88,16 +88,22 @@ class GemScraper:
         self._initialized = False
 
     async def scrape_bids(
-        self, max_pages: Optional[int] = None, max_bids: Optional[int] = None
+        self,
+        max_pages: Optional[int] = None,
+        max_bids: Optional[int] = None,
+        keyword: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Scrape bids from GeM listing pages."""
+        """Scrape bids from GeM listing pages, optionally filtered by GeM's keyword search."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            _executor, self._sync_scrape_bids, max_pages, max_bids
+            _executor, self._sync_scrape_bids, max_pages, max_bids, keyword
         )
 
     def _sync_scrape_bids(
-        self, max_pages: Optional[int] = None, max_bids: Optional[int] = None
+        self,
+        max_pages: Optional[int] = None,
+        max_bids: Optional[int] = None,
+        keyword: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Synchronous scraping - runs in thread."""
         if self.page is None:
@@ -106,8 +112,10 @@ class GemScraper:
         max_pages = max_pages or settings.SCRAPE_MAX_PAGES
         max_bids = max_bids or settings.SCRAPE_MAX_BIDS
 
-        logger.info("scraper.start", max_pages=max_pages, max_bids=max_bids)
+        logger.info("scraper.start", max_pages=max_pages, max_bids=max_bids, keyword=keyword)
         self.page.goto(self.BASE_URL, timeout=self.PAGE_LOAD_TIMEOUT, wait_until="networkidle")
+        if keyword:
+            self._sync_search(keyword)
 
         collected: List[Dict[str, Any]] = []
         seen: set = set()
@@ -139,6 +147,16 @@ class GemScraper:
                     break
 
         return collected
+
+    def _sync_search(self, keyword: str) -> None:
+        """Run GeM's own bid search (the #searchBid box -> POST /all-bids-data) - runs in thread."""
+        box = self.page.query_selector("#searchBid")
+        if box is None:
+            raise RuntimeError("GeM search box (#searchBid) not found")
+        box.fill(keyword)
+        with self.page.expect_response(lambda r: "all-bids-data" in r.url, timeout=self.PAGE_LOAD_TIMEOUT):
+            box.press("Enter")
+        self.page.wait_for_load_state("networkidle", timeout=self.PAGE_LOAD_TIMEOUT)
 
     def _sync_try_next_page(self) -> bool:
         """Try to navigate to next page - runs in thread."""

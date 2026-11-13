@@ -91,8 +91,16 @@ def _normalize_pdf_url(href: str) -> str:
     return f"https://bidplus.gem.gov.in/{href}"
 
 
+# Field labels printed on GeM bid cards; a value ends where the next label begins.
+_CARD_LABELS = [
+    "Items", "Quantity", "Department Name And Address", "Department", "Start Date", "End Date",
+    "Bid Type", "Bid Value", "RA NO", "BID NO",
+]
+_NEXT_LABEL = "|".join(re.escape(label) for label in _CARD_LABELS)
+
+
 def _extract_after_label(text: str, label: str) -> Optional[str]:
-    pattern = re.compile(rf"{re.escape(label)}\s*[:\-]\s*(.+?)(?:\s+[A-Z][a-z]+\s+Date:|$)")
+    pattern = re.compile(rf"{re.escape(label)}\s*[:\-]\s*(.+?)(?=\s+(?:{_NEXT_LABEL})\s*:|$)")
     match = pattern.search(text)
     if match:
         return match.group(1).strip()

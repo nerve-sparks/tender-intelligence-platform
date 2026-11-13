@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Tuple
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.config import settings
 from app.services.match_service import MatchService
 
 
@@ -46,7 +47,7 @@ class DashboardService:
                 q=None,
                 time_period="30d",
                 sort="best_match",
-                min_score=0.8,
+                min_score=settings.MATCH_MIN_SCORE,
                 page=1,
                 limit=500,
             )
