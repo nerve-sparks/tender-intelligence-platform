@@ -7,8 +7,17 @@ import { useToastSimple } from "@/components/ui/toaster-simple";
 interface ShareTenderProps {
   open: boolean;
   onClose: () => void;
-  tenderId: string;
+  tenderId?: string;
   companyId: string;
+  /** Dialog heading; defaults to the single-tender wording. */
+  title?: string;
+  /** Text on the button while sending. */
+  sendingLabel?: string;
+  /**
+   * Custom send (e.g. all saved tenders at once). Return the toast message on success.
+   * When omitted, the single tender `tenderId` is shared.
+   */
+  onSend?: (recipients: string[]) => Promise<string>;
 }
 
 interface Recipient {
@@ -16,7 +25,15 @@ interface Recipient {
   name: string;
 }
 
-const ShareTender = ({ open, onClose, tenderId, companyId }: ShareTenderProps) => {
+const ShareTender = ({
+  open,
+  onClose,
+  tenderId = "",
+  companyId,
+  title = "Share Tender by Email",
+  sendingLabel = "Sending...",
+  onSend,
+}: ShareTenderProps) => {
   const [input, setInput] = useState("");
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [sending, setSending] = useState(false);
@@ -54,6 +71,19 @@ const ShareTender = ({ open, onClose, tenderId, companyId }: ShareTenderProps) =
   const submit = async () => {
     if (!canDone) return;
     setSending(true);
+    if (onSend) {
+      try {
+        const message = await onSend(recipients.map((item) => item.email));
+        pushToast(message, "success");
+        setRecipients([]);
+        onClose();
+      } catch (error: any) {
+        pushToast(error?.response?.data?.error?.message || error?.message || "Unable to send email", "error");
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
     try {
       const result = await shareTenderByEmail(tenderId, {
         company_id: companyId,
@@ -78,7 +108,7 @@ const ShareTender = ({ open, onClose, tenderId, companyId }: ShareTenderProps) =
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-4">
       <div className="w-full max-w-[820px] rounded-md bg-[#f7f7f7] p-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-xl font-semibold text-[#171b23] md:text-2xl">Share Tender by Email</h3>
+          <h3 className="text-xl font-semibold text-[#171b23] md:text-2xl">{title}</h3>
           <button onClick={onClose}>
             <X size={20} />
           </button>
@@ -137,7 +167,7 @@ const ShareTender = ({ open, onClose, tenderId, companyId }: ShareTenderProps) =
           onClick={submit}
           className="mx-auto mt-3 block h-11 min-w-[160px] rounded-2xl bg-[#4040E0] px-7 text-sm text-white disabled:opacity-50"
         >
-          {sending ? "Sending..." : "Done"}
+          {sending ? sendingLabel : "Done"}
         </button>
       </div>
     </div>

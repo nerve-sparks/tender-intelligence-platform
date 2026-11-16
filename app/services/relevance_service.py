@@ -348,15 +348,25 @@ class RelevanceService:
         ranked.sort(key=lambda item: item[0], reverse=True)
         decisions = await self.past_decisions(company_id) if ranked else {}
         judged: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
-        for _, tender in ranked[:max_llm]:
-            try:
-                judgment = await self.judge(tender, profile, decisions=decisions)
-                await self._store(company_id, tender, profile, judgment)
-                judged.append((tender, judgment))
-                stats["judged"] += 1
-            except Exception as exc:  # LLM unavailable / bad output: keep the quick score
-                stats["errors"] += 1
-                logger.info("relevance.judge_failed", company_id=company_id, tender_id=str(tender.get("_id")), error=str(exc))
+        # Several judgments at once (each is an independent LLM call); same prompt, same result.
+        limit = asyncio.Semaphore(max(1, settings.MATCH_JUDGE_CONCURRENCY))
+
+        results: Dict[int, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
+
+        async def judge_one(index: int, tender: Dict[str, Any]) -> None:
+            async with limit:
+                try:
+                    judgment = await self.judge(tender, profile, decisions=decisions)
+                    await self._store(company_id, tender, profile, judgment)
+                    results[index] = (tender, judgment)
+                    stats["judged"] += 1
+                except Exception as exc:  # LLM unavailable / bad output: keep the quick score
+                    stats["errors"] += 1
+                    logger.info("relevance.judge_failed", company_id=company_id,
+                                tender_id=str(tender.get("_id")), error=str(exc))
+
+        await asyncio.gather(*(judge_one(i, tender) for i, (_, tender) in enumerate(ranked[:max_llm])))
+        judged = [results[i] for i in sorted(results)]  # best pre-score first, as before
 
         if judged:
             try:

@@ -68,6 +68,10 @@ class InMemoryCollection:
         self.docs.append(payload)
         return SimpleResult(inserted_id=payload["_id"])
 
+    async def insert_many(self, docs: List[Dict[str, Any]]):
+        ids = [(await self.insert_one(doc)).inserted_id for doc in docs]
+        return SimpleResult(inserted_id=ids)
+
     def find(self, filters: Optional[Dict[str, Any]] = None):
         matched = [copy.deepcopy(item) for item in self.docs if _matches(item, filters or {})]
         return InMemoryCursor(matched)

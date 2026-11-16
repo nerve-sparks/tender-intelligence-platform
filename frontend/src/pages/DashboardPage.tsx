@@ -69,8 +69,12 @@ const DashboardPage = () => {
           <button
             onClick={async () => {
               try {
-                await triggerScrapeAnalyze();
-                pushToast("Scrape & Analyze triggered", "success");
+                const result = await triggerScrapeAnalyze();
+                if (result?.already_running) {
+                  pushToast("A scrape is already running - new tenders appear as they are analysed", "success");
+                } else {
+                  pushToast("Scrape & Analyze started - this takes a while, new tenders appear as they are analysed", "success");
+                }
               } catch {
                 pushToast("Unable to trigger scrape job", "error");
               }

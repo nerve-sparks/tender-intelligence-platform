@@ -140,6 +140,21 @@ export const markNotificationsRead = async (companyId: string) => {
   return data;
 };
 
+export interface AutoSearchKeyword {
+  keyword: string;
+  from: string;
+}
+
+/** Rebuild the GeM search keywords from the current offering profile (LLM call, can take a few seconds). */
+export const regenerateSearchKeywords = async (companyId: string) => {
+  const { data } = await api.post<{ company_id: string; auto_search_keywords: AutoSearchKeyword[] }>(
+    `/companies/${companyId}/search-keywords/regenerate`,
+    undefined,
+    { timeout: 120_000 }
+  );
+  return data;
+};
+
 export const rematchCompany = async (companyId: string) => {
   const { data } = await api.post(`/companies/${companyId}/rematch`);
   return data;
@@ -183,6 +198,22 @@ export const shareTenderByEmail = async (
   payload: { company_id: string; recipients: string[]; note?: string }
 ) => {
   const { data } = await api.post<{ sent: boolean; count: number }>(`/tenders/${tenderId}/share`, payload);
+  return data;
+};
+
+export interface ShareSavedResult {
+  sent: boolean;
+  count: number;
+  tenders: number;
+  attached: number;
+  link_only: number;
+}
+
+/** Email all saved tenders in one message, with their GeM bid PDFs attached. */
+export const shareSavedTenders = async (companyId: string, payload: { recipients: string[]; note?: string }) => {
+  const { data } = await api.post<ShareSavedResult>(`/companies/${companyId}/share-saved`, payload, {
+    timeout: 180_000, // fetching bid PDFs from GeM can take a while
+  });
   return data;
 };
 

@@ -14,9 +14,11 @@ from app.api.routes import dashboard, jobs, websocket
 from app.config import settings
 from app.database.mongodb import create_indexes, close_client
 from app.jobs.scheduler import shutdown_scheduler, start_scheduler
-from app.utils.logger import configure_logging
+from app.utils.logger import configure_logging, get_logger
 from app.utils.exceptions import AppError
 
+
+logger = get_logger(__name__)
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 
@@ -99,8 +101,26 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def on_startup() -> None:
     configure_logging(settings.LOG_LEVEL)
     await create_indexes()
+    await _close_interrupted_jobs()
     if settings.ENABLE_SCHEDULER:
-        start_scheduler()
+        from app.database.mongodb import get_database
+        from app.jobs.scheduler import next_scrape_time
+
+        first = await next_scrape_time(get_database())
+        start_scheduler(first_scrape_at=first)
+        logger.info("scheduler.first_scrape", at=first.isoformat())
+
+
+async def _close_interrupted_jobs() -> None:
+    """Jobs still marked "running" at startup were cut off by a restart - they will never finish."""
+    from datetime import datetime, timezone
+
+    from app.database.mongodb import get_database
+
+    await get_database().get_collection("scrape_logs").update_many(
+        {"status": "running"},
+        {"$set": {"status": "interrupted", "completed_at": datetime.now(timezone.utc)}},
+    )
 
 
 @app.on_event("shutdown")

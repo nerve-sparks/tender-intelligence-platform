@@ -101,15 +101,32 @@ Text:
 
 
 SEARCH_KEYWORDS_PROMPT = """
-Below is a company's offering profile. List 6-10 short search terms (1-3 words each) that would appear in the
-TITLES or ITEM CATEGORY names of Indian government GeM (Government e-Marketplace) bids for work this company can
-actually deliver. Use plain procurement wording as a government buyer would write it, not marketing language.
-Do not include terms for things the company does not do.
+Below is a company's offering profile. Produce the search terms its bid team should type into the Indian
+government GeM (Government e-Marketplace) bid search to find tenders for what THIS company sells.
+
+For EACH entry in "offerings" and "core_capabilities" give 1-3 search terms (1-4 words each):
+- the plain name of the product / service as a government buyer would write it in a bid title or item category
+- GeM category style where natural: "... Services", "... as a Service", "Development of ...", "Hiring of ...",
+  "Supply of ...", "Repair and Maintenance of ..."
+- what buyers call the application, but only applications this profile itself names
+Translate brand or product names into what is being bought (a product called "Zenith Care Suite" that is a
+hospital management system -> "hospital management system").
+
+Examples from different industries (format only - do not copy these terms):
+- "ICU ventilators" -> "ventilator", "patient monitor"
+- "Road construction" -> "road construction", "repair of road"
+- "Payroll software" -> "payroll software", "HRMS"
+
+Rules:
+- Every term must come from one profile entry; put that entry, copied exactly, in "from".
+- Never produce a term for anything in "excluded_capabilities", or for goods / works / services the company does not offer.
+- No generic-only terms ("software", "services", "solutions", "IT", "technology", "supply").
+- No marketing words. 10 to 25 terms in total, most important offerings first.
 
 Company profile (JSON):
 {company}
 
-Return ONLY valid JSON: {{"keywords": ["...", "..."]}}
+Return ONLY valid JSON: {{"keywords": [{{"keyword": "...", "from": "..."}}]}}
 """
 
 
@@ -269,7 +286,9 @@ class LLMExtractor:
 
         return merged
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
+    # Longer back-off: several bids are analysed in parallel, so a provider rate limit (429)
+    # should slow processing down, not fail the bid.
+    @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=4, max=30))
     def extract_tender(self, text: str) -> Dict[str, Any]:
         """Extract tender metadata from full document text."""
         max_chars = self._get_max_chars()
@@ -362,14 +381,26 @@ class LLMExtractor:
         return result
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=8))
-    def suggest_search_keywords(self, company: Dict[str, Any]) -> List[str]:
-        """GeM search terms for a company profile that was extracted without them."""
-        prompt = SEARCH_KEYWORDS_PROMPT.format(company=json.dumps(company, ensure_ascii=False, default=str)[:6000])
+    def suggest_search_keywords(self, company: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        GeM search terms for a company profile: [{"keyword": ..., "from": <profile entry>}].
+        A plain list of strings (older output format) is accepted with "from" = None.
+        """
+        prompt = SEARCH_KEYWORDS_PROMPT.format(company=json.dumps(company, ensure_ascii=False, default=str)[:8000])
         result = self._parse_json(self._generate(prompt))
         keywords = result.get("keywords") if isinstance(result, dict) else None
         if not isinstance(keywords, list):
             raise ValueError("LLM returned no keywords")
-        return [str(k).strip() for k in keywords if str(k).strip()]
+        out: List[Dict[str, Any]] = []
+        for item in keywords:
+            if isinstance(item, dict):
+                keyword = str(item.get("keyword") or "").strip()
+                source = str(item.get("from") or "").strip() or None
+            else:
+                keyword, source = str(item).strip(), None
+            if keyword:
+                out.append({"keyword": keyword, "from": source})
+        return out
 
     def generate_text(self, prompt: str) -> str:
         """Generate free-form text using the configured provider."""

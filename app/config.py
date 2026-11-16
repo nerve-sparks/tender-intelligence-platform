@@ -35,8 +35,14 @@ class Settings(BaseSettings):
     # Scraping
     SCRAPE_MAX_PAGES: int = 10
     SCRAPE_MAX_BIDS: int = 200
-    SCRAPE_MAX_KEYWORDS: int = 10  # GeM keyword searches per scrape (from company profiles)
-    SCRAPE_KEYWORD_PAGES: int = 2  # result pages per keyword search
+    SCRAPE_MAX_KEYWORDS: int = 100  # overall safety cap on GeM keyword searches per scrape (all companies)
+    SCRAPE_KEYWORDS_PER_COMPANY: int = 50  # per company: enough for every keyword, best-performing first
+    SCRAPE_KEYWORD_PAGES: int = 3  # result pages per keyword search
+    SCRAPE_SEARCH_WORKERS: int = 2  # GeM searches in parallel (one browser each)
+    SCRAPE_PROCESS_CONCURRENCY: int = 4  # bids analysed (PDF + LLM) at the same time
+    SCRAPE_LISTING_FILTER: bool = True  # general listing: only analyse cards matching some company's keywords
+    MATCH_JUDGE_CONCURRENCY: int = 4  # relevance judgments (LLM calls) at the same time
+    MATCH_REFRESH_EVERY: int = 6  # judge matches in the background after this many analysed bids
     SCRAPE_KEYWORD_MAX_BIDS: int = 40  # bids per keyword search
     SCRAPE_MIN_DELAY: int = 2
     SCRAPE_MAX_DELAY: int = 5
@@ -89,6 +95,7 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASS: str = ""
     SENDGRID_API_KEY: str = ""
+    EMAIL_MAX_ATTACHMENT_MB: float = 18  # bid PDFs attached to one email; the rest are sent as links
 
     # OAuth (optional placeholders for MVP)
     GOOGLE_CLIENT_ID: str = ""

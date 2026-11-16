@@ -4,7 +4,9 @@ Tender processing service.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +20,8 @@ from app.processors.pdf_extractor import PDFExtractor
 from app.scraper.pdf_downloader import download_with_retry
 from app.utils.logger import get_logger
 
+_EMBED_LOCK = threading.Lock()
+
 logger = get_logger(__name__)
 
 
@@ -27,6 +31,10 @@ class TenderService:
         self.pdf_extractor = PDFExtractor()
         self.embedder = TextEmbedder()
         self._llm: Optional[LLMExtractor] = None
+
+    def _embed(self, text: str):
+        with _EMBED_LOCK:  # one shared model; keep encodes from overlapping across threads
+            return self.embedder.embed(text)
 
     def _get_llm(self) -> LLMExtractor:
         if self._llm is None:
@@ -92,13 +100,15 @@ class TenderService:
                 status["pdf_downloaded"] = True
 
             # Use the path just downloaded; the `tender` dict loaded above is stale.
-            text = self.pdf_extractor.extract_text(pdf_path)
+            # PDF parsing, the LLM call and the embedding are blocking - run them in worker threads so
+            # the API stays responsive and several bids can be analysed at the same time.
+            text = await asyncio.to_thread(self.pdf_extractor.extract_text, pdf_path)
             if not text:
                 status.update({"last_error": "PDF extraction failed"})
                 await self.repo.set_status(bid_id, status)
                 return False
 
-            metadata = self._get_llm().extract_tender(text)
+            metadata = await asyncio.to_thread(self._get_llm().extract_tender, text)
             if isinstance(metadata, dict):
                 # Standard GeM fields read deterministically (eligibility depends on them).
                 metadata.update({k: v for k, v in parse_gem_bid_fields(text).items() if v})
@@ -106,7 +116,7 @@ class TenderService:
             status["last_error"] = None
 
             summary = metadata.get("summary") if isinstance(metadata, dict) else None
-            summary_embedding = self.embedder.embed(summary or "")
+            summary_embedding = await asyncio.to_thread(self._embed, summary or "")
             status["embedding_generated"] = True
 
             await self.repo.update(

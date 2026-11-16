@@ -4,6 +4,7 @@ Company profile and onboarding API routes.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -15,6 +16,10 @@ from app.config import settings
 from app.services.company_service import CompanyService
 from app.services.match_service import MatchService
 from app.services.relevance_service import RelevanceService
+from app.services.search_keywords import generate_auto_keywords
+from app.services.share_service import ShareService
+
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
@@ -185,6 +190,53 @@ async def rematch_company(
         raise HTTPException(status_code=404, detail="Company profile not found")
     stats = await RelevanceService(db).refresh_company(company_id)
     return {"company_id": company_id, **stats}
+
+
+@router.post("/{company_id}/search-keywords/regenerate", response_model=Dict[str, Any])
+async def regenerate_search_keywords(
+    company_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Rebuild the GeM search keywords from the current offering profile (the company's own list is kept)."""
+    profile = await db.get_collection("company_profiles").find_one(
+        {"company_id": company_id, "owner_user_id": current_user["id"]}
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Company profile not found")
+    if not profile.get("metadata"):
+        raise HTTPException(status_code=400, detail="Process the offering profile first")
+    auto = await generate_auto_keywords(db, profile)
+    return {"company_id": company_id, "auto_search_keywords": auto}
+
+
+class ShareSavedRequest(BaseModel):
+    recipients: List[str] = Field(default_factory=list)
+    note: Optional[str] = None
+
+
+@router.post("/{company_id}/share-saved", response_model=Dict[str, Any])
+async def share_saved_tenders(
+    company_id: str,
+    payload: ShareSavedRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Email all saved tenders in one message, with their GeM bid PDFs attached."""
+    recipients = list(dict.fromkeys(r.strip().lower() for r in payload.recipients if r and r.strip()))
+    if not recipients:
+        raise HTTPException(status_code=400, detail="Add at least one email address")
+    invalid = [r for r in recipients if not EMAIL_PATTERN.match(r)]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid email address: {invalid[0]}")
+    try:
+        return await ShareService(db).share_saved(
+            company_id=company_id, owner_user_id=current_user["id"], recipients=recipients, note=payload.note,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{company_id}/tenders/{tender_id}/match", response_model=Dict[str, Any])

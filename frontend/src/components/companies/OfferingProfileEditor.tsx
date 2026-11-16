@@ -2,8 +2,35 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useToastSimple } from "@/components/ui/toaster-simple";
-import { updateCompanyOffering } from "@/services/tenderAgentApi";
+import { AutoSearchKeyword, regenerateSearchKeywords, updateCompanyOffering } from "@/services/tenderAgentApi";
 import { CompanyProfile } from "@/types/tender-agent";
+
+interface KeywordStat {
+  keyword: string;
+  found?: number;
+  matched?: number;
+  runs?: number;
+}
+
+const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** "found 12 · 3 matched" after a keyword has been searched on GeM at least once. */
+const yieldLabel = (stat?: KeywordStat) => {
+  if (!stat || !stat.runs) return "not searched yet";
+  return `found ${stat.found ?? 0} · ${stat.matched ?? 0} matched`;
+};
+
+const KeywordChip = ({ keyword, stat, title }: { keyword: string; stat?: KeywordStat; title?: string }) => (
+  <span
+    title={title}
+    className={`rounded-full px-2 py-0.5 text-xs ${
+      stat?.matched ? "bg-[#daf4eb] text-[#16835e]" : "bg-[#eef0ff] text-[#4040E0]"
+    }`}
+  >
+    {keyword}
+    <span className="ml-1 text-[10px] opacity-70">({yieldLabel(stat)})</span>
+  </span>
+);
 
 const LIST_FIELDS: Array<{ key: string; label: string; hint: string }> = [
   { key: "core_capabilities", label: "What you deliver", hint: "Specific capabilities, e.g. LLM fine-tuning, road construction" },
@@ -12,8 +39,8 @@ const LIST_FIELDS: Array<{ key: string; label: string; hint: string }> = [
   { key: "excluded_capabilities", label: "What you do NOT do", hint: "Tenders requiring these are rejected, e.g. hardware supply" },
   {
     key: "tender_search_keywords",
-    label: "GeM search keywords",
-    hint: "Short terms searched on GeM every scrape, e.g. artificial intelligence, software development",
+    label: "Your own GeM search keywords (optional)",
+    hint: "Extra terms you want searched on GeM, in addition to the ones generated from your profile",
   },
 ];
 
@@ -85,8 +112,22 @@ const OfferingProfileEditor = ({ company }: { company?: CompanyProfile }) => {
     onError: () => pushToast("Unable to save offering profile", "error"),
   });
 
+  const regenerateMutation = useMutation({
+    mutationFn: () => regenerateSearchKeywords(company?.company_id || ""),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["company", company?.company_id] });
+      pushToast(`${data.auto_search_keywords.length} GeM search keywords generated from your profile`, "success");
+    },
+    onError: () => pushToast("Unable to regenerate keywords", "error"),
+  });
+
   if (!company) return null;
   const learned = Array.isArray(meta.learned_search_keywords) ? (meta.learned_search_keywords as string[]) : [];
+  const auto = Array.isArray(meta.auto_search_keywords) ? (meta.auto_search_keywords as AutoSearchKeyword[]) : [];
+  const stats = new Map<string, KeywordStat>();
+  (Array.isArray(meta.keyword_stats) ? (meta.keyword_stats as KeywordStat[]) : []).forEach((stat) => {
+    if (stat?.keyword) stats.set(normalize(stat.keyword), stat);
+  });
 
   return (
     <div className="rounded-xl border border-[#d8dce6] bg-white p-5">
@@ -141,18 +182,49 @@ const OfferingProfileEditor = ({ company }: { company?: CompanyProfile }) => {
         </div>
       </div>
 
-      {learned.length > 0 && (
-        <div className="mt-4">
-          <span className="text-xs font-medium text-[#4f5770]">Learned from your best matches (also searched on GeM)</span>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {learned.map((keyword) => (
-              <span key={keyword} className="rounded-full bg-[#eef0ff] px-2 py-0.5 text-xs text-[#4040E0]">
-                {keyword}
-              </span>
-            ))}
+      <div className="mt-4 rounded-lg border border-[#ebedf4] p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span className="text-xs font-medium text-[#4f5770]">GeM search keywords generated from your offering profile</span>
+            <p className="text-[11px] text-[#7a8195]">
+              Every offering gets its own GeM search terms. They refresh automatically when the profile changes; keywords
+              that find good tenders are searched first. Hover a keyword to see which offering it came from.
+            </p>
           </div>
+          <button
+            type="button"
+            onClick={() => regenerateMutation.mutate()}
+            disabled={regenerateMutation.isPending}
+            className="rounded-full border border-[#4040E0] px-3 py-1 text-xs text-[#4040E0] disabled:opacity-60"
+          >
+            {regenerateMutation.isPending ? "Generating..." : "Regenerate from profile"}
+          </button>
         </div>
-      )}
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {auto.length === 0 && (
+            <span className="text-xs text-[#7a8195]">Not generated yet - they are created on the next scrape, or click Regenerate.</span>
+          )}
+          {auto.map((item) => (
+            <KeywordChip
+              key={item.keyword}
+              keyword={item.keyword}
+              stat={stats.get(normalize(item.keyword))}
+              title={`From: ${item.from}`}
+            />
+          ))}
+        </div>
+
+        {learned.length > 0 && (
+          <div className="mt-3">
+            <span className="text-xs font-medium text-[#4f5770]">Learned from your best matches (also searched on GeM)</span>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {learned.map((keyword) => (
+                <KeywordChip key={keyword} keyword={keyword} stat={stats.get(normalize(keyword))} />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="mt-4 grid max-w-xl gap-4 sm:grid-cols-2">
         <label className="block">

@@ -19,6 +19,7 @@ from app.services.ai_chat_service import AIChatService
 from app.services.email_service import EmailService
 from app.services.match_service import MatchService
 from app.services.search_service import SearchService
+from app.services.share_service import tender_email_entry
 from app.services.tender_service import TenderService
 
 router = APIRouter(prefix="/tenders", tags=["tenders"])
@@ -213,32 +214,20 @@ async def share_tender_by_email(
     if not tender:
         raise HTTPException(status_code=404, detail="Tender not found")
 
-    action = await db.get_collection("tender_actions").find_one(
-        {"company_id": payload.company_id, "tender_id": tender_id}
-    )
-
-    tender_meta = tender.get("metadata") or {}
-    tender_info = {
-        "id": tender_id,
-        "title": tender_meta.get("title") or (tender.get("scraped_info") or {}).get("items"),
-        "department": tender_meta.get("department") or (tender.get("scraped_info") or {}).get("department"),
-        "location": tender_meta.get("location"),
-        "bid_id": tender.get("bid_id"),
-        "gem_url": tender.get("gem_url"),
-        "summary": tender_meta.get("summary"),
-        "published_date": (tender.get("scraped_info") or {}).get("start_date"),
-        "close_date": (tender.get("scraped_info") or {}).get("end_date"),
-    }
-
-    match_percent = 80
-    if action and action.get("action") in {"saved", "applied"}:
-        match_percent = 90
+    # The real match result for this company (not a placeholder percentage).
+    try:
+        match = await MatchService(db).get_tender_match(
+            company_id=payload.company_id, owner_user_id=current_user["id"], tender_id=tender_id
+        )
+    except Exception:
+        match = None
+    tender_info = tender_email_entry(tender, match)
 
     email_service = EmailService()
     result = await email_service.send_tender_share(
         recipients=payload.recipients,
         tender=tender_info,
-        match_percent=match_percent,
+        match_percent=tender_info.get("match_percent"),
         note=payload.note,
     )
 

@@ -20,8 +20,6 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Thread pool for running sync playwright
-_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scraper")
 
 
 class GemScraper:
@@ -29,6 +27,7 @@ class GemScraper:
 
     BASE_URL = "https://bidplus.gem.gov.in/all-bids"
 
+    FULL_PAGE = 10  # bid cards per GeM listing page
     PAGE_LOAD_TIMEOUT = 60000
     ELEMENT_TIMEOUT = 30000
 
@@ -37,6 +36,12 @@ class GemScraper:
         self.page: Optional[Page] = None
         self.playwright = None
         self._initialized = False
+        # Sync Playwright objects may only be used from the thread that created them, so every
+        # scraper gets its own single worker thread (fresh per scrape, shut down on close).
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scraper")
+
+    async def _run(self, fn, *args):
+        return await asyncio.get_running_loop().run_in_executor(self._executor, fn, *args)
 
     async def __aenter__(self):
         await self.initialize()
@@ -48,8 +53,7 @@ class GemScraper:
 
     async def initialize(self) -> None:
         """Initialize the scraper in a background thread."""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(_executor, self._sync_initialize)
+        await self._run(self._sync_initialize)
 
     def _sync_initialize(self) -> None:
         """Synchronous initialization - runs in thread."""
@@ -73,18 +77,26 @@ class GemScraper:
 
     async def close(self) -> None:
         """Close the scraper in a background thread."""
-        if self._initialized:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(_executor, self._sync_close)
+        try:
+            if self._initialized or self.playwright is not None:
+                await self._run(self._sync_close)
+        finally:
+            self._executor.shutdown(wait=False)
 
     def _sync_close(self) -> None:
         """Synchronous close - runs in thread."""
-        if self.page is not None:
-            self.page.close()
-        if self.browser is not None:
-            self.browser.close()
-        if self.playwright is not None:
-            self.playwright.stop()
+        for closer in (
+            getattr(self.page, "close", None),
+            getattr(self.browser, "close", None),
+            getattr(self.playwright, "stop", None),
+        ):
+            if closer is None:
+                continue
+            try:
+                closer()
+            except Exception as exc:  # never let cleanup hide the real scrape error
+                logger.info("scraper.close_failed", error=str(exc))
+        self.page = self.browser = self.playwright = None
         self._initialized = False
 
     async def scrape_bids(
@@ -94,10 +106,7 @@ class GemScraper:
         keyword: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Scrape bids from GeM listing pages, optionally filtered by GeM's keyword search."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            _executor, self._sync_scrape_bids, max_pages, max_bids, keyword
-        )
+        return await self._run(self._sync_scrape_bids, max_pages, max_bids, keyword)
 
     def _sync_scrape_bids(
         self,
@@ -125,12 +134,14 @@ class GemScraper:
             html = self.page.content()
             bids = parse_bid_cards(html)
 
+            added = 0
             for bid in bids:
                 bid_id = bid.get("bid_id")
                 if not bid_id or bid_id in seen:
                     continue
                 seen.add(bid_id)
                 collected.append(bid)
+                added += 1
                 if len(collected) >= max_bids:
                     logger.info("scraper.max_bids_reached", count=len(collected))
                     return collected
@@ -141,6 +152,11 @@ class GemScraper:
                 bids=len(bids),
                 total=len(collected),
             )
+
+            # Results ran out: a page with nothing new (GeM repeats the last page) or a part-filled
+            # page means there is no next page worth waiting for.
+            if added == 0 or len(bids) < self.FULL_PAGE:
+                break
 
             if not self._sync_try_next_page():
                 if not self._sync_try_scroll():

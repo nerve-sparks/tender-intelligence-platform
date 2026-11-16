@@ -44,6 +44,10 @@ class JobService:
         return self._serialize(job) if job else None
 
     async def trigger_scrape(self) -> Dict[str, Any]:
+        from app.jobs.scrape_job import is_scrape_running
+
+        if is_scrape_running():
+            return {"triggered": False, "already_running": True, "job_type": "scrape"}
         asyncio.create_task(run_scrape_job())
         await manager.broadcast(
             {
