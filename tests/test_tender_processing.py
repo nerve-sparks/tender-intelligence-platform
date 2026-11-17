@@ -92,3 +92,14 @@ async def test_rescrape_keeps_processing_status(fake_db, monkeypatch, tmp_path):
     await service.create_or_update_from_scrape({"bid_id": "GEM/2026/B/1", "items": "AI platform"})
     saved = await fake_db.get_collection("tenders").find_one({"bid_id": "GEM/2026/B/1"})
     assert saved["status"]["llm_processed"] is True
+
+
+def test_emd_formatted_as_rupees():
+    from app.services.tender_service import format_rupees
+
+    assert format_rupees(4634900) == "₹46,34,900"
+    assert format_rupees("4634900") == "₹46,34,900"
+    assert format_rupees("370000") == "₹3,70,000"
+    assert format_rupees(950) == "₹950"
+    assert format_rupees("₹70,20,000 (Schedule 1)") == "₹70,20,000 (Schedule 1)"  # worded text untouched
+    assert format_rupees("Not required") == "Not required"

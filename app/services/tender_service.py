@@ -22,6 +22,32 @@ from app.utils.logger import get_logger
 
 _EMBED_LOCK = threading.Lock()
 
+
+def format_rupees(value):
+    """A bare amount (4634900, "4634900", "46,34,900") as Indian rupees (₹46,34,900); text is kept as is."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        number = value
+    else:
+        text = str(value).strip()
+        digits = text.replace(",", "").replace(" ", "")
+        if not digits.replace(".", "", 1).isdigit():
+            return value  # already worded / has ₹, Lakh, Schedule ... -> leave it
+        number = float(digits)
+    whole = int(round(number))
+    s = str(whole)
+    if len(s) > 3:
+        head, tail = s[:-3], s[-3:]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        s = ",".join(groups + [tail])
+    return f"₹{s}"
+
 logger = get_logger(__name__)
 
 
@@ -112,6 +138,9 @@ class TenderService:
             if isinstance(metadata, dict):
                 # Standard GeM fields read deterministically (eligibility depends on them).
                 metadata.update({k: v for k, v in parse_gem_bid_fields(text).items() if v})
+                # Some models return the EMD as a bare number (4634900); show it as ₹46,34,900.
+                if metadata.get("emd_amount") is not None:
+                    metadata["emd_amount"] = format_rupees(metadata["emd_amount"])
             status["llm_processed"] = True
             status["last_error"] = None
 
