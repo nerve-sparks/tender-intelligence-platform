@@ -32,6 +32,7 @@ from app.services.matching_utils import (
     normalize_vector_similarity,
     quick_match_score,
 )
+from app.utils.gem_dates import days_left
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,12 +44,22 @@ MAX_LEARNED_KEYWORDS = 10
 PURSUE_SCORE = 0.8  # at/above: "Pursue"; MATCH_MIN_SCORE..PURSUE_SCORE: "Consider"; below: "Skip"
 
 WEIGHTS = {
-    "business_relevance": 0.45,
-    "capability_alignment": 0.25,
+    "business_relevance": 0.40,
+    "capability_alignment": 0.20,
     "eligibility": 0.10,
     "buyer_relevance": 0.10,
     "vector": 0.10,
+    "time_left": 0.10,  # more days before closing -> more time to prepare a bid -> higher score
 }
+FULL_TIME_DAYS = 30  # this many days left (or more) earns the whole time_left weight
+
+
+def time_left_factor(tender: Dict[str, Any]) -> Tuple[Optional[int], float]:
+    """(days left, 0..1 factor) from GeM's current deadline; 0.5 when the closing date is unknown."""
+    days = days_left((tender.get("scraped_info") or {}).get("end_date"))
+    if days is None:
+        return None, 0.5
+    return days, min(days, FULL_TIME_DAYS) / FULL_TIME_DAYS
 
 TENDER_BRIEF_KEYS = [
     "title", "buyer", "department", "sector", "procurement_type", "what_is_being_bought", "scope_items",
@@ -152,12 +163,15 @@ def build_match(
         relevance = _level(judgment.get("business_relevance")) or "LOW"
         capability = _level(judgment.get("capability_alignment")) or "LOW"
         buyer = _level(judgment.get("buyer_relevance")) or "MEDIUM"
+        days, time_factor = time_left_factor(tender)
+        match["time_left"] = {"days": days, "factor": round(time_factor, 3)}
         score = (
             WEIGHTS["business_relevance"] * LEVELS[relevance]
             + WEIGHTS["capability_alignment"] * LEVELS[capability]
             + WEIGHTS["eligibility"] * eligibility["score"]
             + WEIGHTS["buyer_relevance"] * LEVELS[buyer]
             + WEIGHTS["vector"] * normalize_vector_similarity(vector_similarity)
+            + WEIGHTS["time_left"] * time_factor
         )
         # A hard "no" overrides any amount of similarity.
         if relevance == "NONE" or capability == "NONE":

@@ -107,7 +107,7 @@ async def test_expired_flags_follow_india_time_and_extensions(fake_db):
     assert state == {"closed": True, "open": False, "extended": False, "ra": True}
 
 
-def test_match_order_band_then_most_time_left():
+def test_match_order_band_then_score():
     now = gem_now()
 
     def tender(days):
@@ -115,10 +115,11 @@ def test_match_order_band_then_most_time_left():
 
     items = [
         ("pursue_soon", 0.95, tender(1)),     # closes within 2 days -> bottom of its band
-        ("pursue_short", 0.82, tender(5)),
-        ("pursue_long", 0.81, tender(25)),
-        ("consider_long", 0.74, tender(40)),
-        ("consider_short", 0.79, tender(4)),
+        ("pursue_a", 0.82, tender(5)),
+        ("pursue_b", 0.88, tender(25)),
+        ("tie_later", 0.82, tender(20)),      # same score -> later closing date first
+        ("consider_low", 0.74, tender(40)),
+        ("consider_high", 0.79, tender(4)),
     ]
     ordered = [name for name, score, t in sorted(items, key=lambda i: match_order_key(i[1], i[2]))]
-    assert ordered == ["pursue_long", "pursue_short", "pursue_soon", "consider_long", "consider_short"]
+    assert ordered == ["pursue_b", "tie_later", "pursue_a", "pursue_soon", "consider_high", "consider_low"]

@@ -170,6 +170,27 @@ def test_navy_llm_scores_high_with_positive_judgment():
     assert match["eligibility"]["fit"] == "MET"
 
 
+def _closing_in(days):
+    from app.utils.gem_dates import gem_now
+
+    return {**NAVY_LLM, "scraped_info": {"end_date": gem_now() + timedelta(days=days, hours=1)}}
+
+
+def test_more_time_left_scores_higher():
+    judgment = {"business_relevance": "HIGH", "capability_alignment": "HIGH", "buyer_relevance": "HIGH"}
+    far = build_match(_closing_in(30), AI_COMPANY, vector_similarity=0.8, judgment=judgment)
+    mid = build_match(_closing_in(15), AI_COMPANY, vector_similarity=0.8, judgment=judgment)
+    near = build_match(_closing_in(0), AI_COMPANY, vector_similarity=0.8, judgment=judgment)
+    assert far["score"] > mid["score"] > near["score"]
+    assert far["score"] - near["score"] == pytest.approx(0.10, abs=0.001)  # time left is 10% of the score
+    assert far["time_left"] == {"days": 30, "factor": 1.0}
+    assert near["time_left"]["days"] == 0
+    # A perfect fit closing today is still worth pursuing
+    assert near["recommendation"] == "PURSUE"
+    # 45 days counts the same as 30 (capped)
+    assert build_match(_closing_in(45), AI_COMPANY, 0.8, judgment)["score"] == far["score"]
+
+
 def test_none_relevance_overrides_high_similarity():
     judgment = {"business_relevance": "NONE", "capability_alignment": "HIGH", "buyer_relevance": "HIGH"}
     match = build_match(NAVY_LLM, AI_COMPANY, vector_similarity=0.99, judgment=judgment)

@@ -48,6 +48,8 @@ export interface TenderMatch {
   business_relevance?: Level | null;
   capability_alignment?: Level | null;
   buyer_relevance?: Level | null;
+  /** Days until GeM's current deadline; factor 0..1 is 10% of the score (30+ days = full) */
+  time_left?: { days: number | null; factor: number } | null;
   eligibility?: {
     fit: "MET" | "NOT_MET" | "UNKNOWN";
     score: number;

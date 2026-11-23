@@ -30,15 +30,15 @@ def match_order_key(score: float, tender: Dict[str, Any]) -> Tuple[int, int, flo
     Best-match order (sort ascending with this key):
       1. Pursue (>= 80%) before Consider (70-79%) before the rest
       2. inside a band, bids that still have time come before ones closing within 2 days
-      3. then the latest closing date first - most time to prepare a bid
-      4. then the higher score
+      3. then the higher score (time left is already part of the score)
+      4. then the later closing date
     """
     band = 2 if score >= 0.8 else 1 if score >= 0.7 else 0
     end = as_gem_time((tender.get("scraped_info") or {}).get("end_date"))
     if end is None:
-        return (-band, 1, 0.0, -score)
+        return (-band, 1, -score, 0.0)
     closing_soon = (end - gem_now()) < timedelta(days=CLOSING_SOON_DAYS)
-    return (-band, 1 if closing_soon else 0, -end.timestamp(), -score)
+    return (-band, 1 if closing_soon else 0, -score, -end.timestamp())
 
 
 class MatchService:

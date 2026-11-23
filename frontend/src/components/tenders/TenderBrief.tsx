@@ -67,6 +67,16 @@ export const MatchLevels = ({ match }: { match?: TenderMatch }) => {
       <LevelPill label="Business" value={match.business_relevance} />
       <LevelPill label="Capability" value={match.capability_alignment} />
       <LevelPill label="Buyer" value={match.buyer_relevance} />
+      {match.time_left && match.time_left.days !== null && (
+        <span
+          className={`rounded px-2 py-0.5 text-[11px] ${
+            match.time_left.days > 7 ? levelStyle.HIGH : match.time_left.days > 2 ? levelStyle.MEDIUM : levelStyle.NONE
+          }`}
+          title="10% of the score: 30+ days left earns it fully, fewer days earn less"
+        >
+          Time left: {match.time_left.days} day{match.time_left.days === 1 ? "" : "s"}
+        </span>
+      )}
       {match.eligibility && match.eligibility.fit !== "UNKNOWN" && (
         <span
           className={`rounded px-2 py-0.5 text-[11px] ${
