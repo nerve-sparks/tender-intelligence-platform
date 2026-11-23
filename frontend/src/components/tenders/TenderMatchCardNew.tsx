@@ -2,6 +2,7 @@ import { CalendarDays, Download, MapPin, Share2 } from "lucide-react";
 
 import { useState } from "react";
 
+import { daysLeft, extendedFrom, formatGemDate } from "@/lib/gemDates";
 import { downloadTenderDocument } from "@/services/tenderAgentApi";
 import { MatchItem } from "@/types/tender-agent";
 
@@ -27,6 +28,8 @@ const TenderMatchCard = ({ item, onOpen, onAction, onShare }: TenderMatchCardPro
   const match = item.match;
   const scorePercent = Math.round((match?.score || 0) * 100);
   const procurement = procurementLabel(match?.procurement_type || meta.procurement_type);
+  const left = daysLeft(scraped.end_date);
+  const original = extendedFrom(tender);
 
   return (
     <div className="rounded-xl border border-[#d8dce6] bg-white p-4 shadow-sm">
@@ -43,7 +46,7 @@ const TenderMatchCard = ({ item, onOpen, onAction, onShare }: TenderMatchCardPro
             <span>{location}</span>
             <span>•</span>
             <CalendarDays size={13} />
-            <span>Published {String(scraped.start_date || "N/A").slice(0, 10)}</span>
+            <span>Published {formatGemDate(scraped.start_date) || "N/A"}</span>
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
             <span className="rounded-full bg-[#4040E0] px-2 py-1 text-[10px] text-white">GeM</span>
@@ -76,9 +79,28 @@ const TenderMatchCard = ({ item, onOpen, onAction, onShare }: TenderMatchCardPro
       </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#ebedf4] pt-3">
-        <div className="flex items-center gap-4 text-sm text-[#525a70]">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[#525a70]">
           <span className="font-medium text-[#159d76]">{scraped.bid_value_range || meta.estimated_value || "N/A"}</span>
-          <span className="text-[#d75252]">{String(scraped.end_date || "N/A").slice(0, 10)}</span>
+          <span className="text-[#d75252]">
+            Closes {formatGemDate(scraped.end_date) || "N/A"}
+            {left !== null && ` (${left} day${left === 1 ? "" : "s"} left)`}
+          </span>
+          {original && (
+            <span
+              className="rounded-full bg-[#fdeecf] px-2 py-0.5 text-[11px] text-[#9a6400]"
+              title="The buyer extended the deadline after publishing. GeM's listing shows the current date; the bid PDF keeps the original."
+            >
+              Extended by buyer
+            </span>
+          )}
+          {(meta.pdf_bid_end_date || meta.pdf_bid_opening_date) && (
+            <span className="text-[12px] text-[#687088]" title="Dates printed in the GeM bid document (PDF)">
+              Bid PDF:
+              {meta.pdf_bid_end_date && ` closes ${formatGemDate(meta.pdf_bid_end_date, true)}`}
+              {meta.pdf_bid_end_date && meta.pdf_bid_opening_date && " ·"}
+              {meta.pdf_bid_opening_date && ` opens ${formatGemDate(meta.pdf_bid_opening_date, true)}`}
+            </span>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2">

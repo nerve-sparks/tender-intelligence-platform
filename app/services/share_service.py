@@ -13,8 +13,9 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.config import settings
 from app.services.email_service import Attachment, EmailService
-from app.services.match_service import MatchService
+from app.services.match_service import MatchService, match_order_key
 from app.services.tender_service import TenderService
+from app.utils.gem_dates import days_left, extended_from
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -29,17 +30,22 @@ def _date(value: Any) -> Optional[str]:
     return str(value)[:10] if value else None
 
 
-def _days_left(value: Any) -> Optional[int]:
-    if not isinstance(value, datetime):
-        return None
-    end = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    return max(0, (end - datetime.now(timezone.utc)).days)
-
-
-def _sort_key(value: Any) -> float:
+def _date_time(value: Any) -> Optional[str]:
+    """"25 Aug 2026, 2:00 PM" (GeM dates are India time)."""
     if isinstance(value, datetime):
-        return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp()
-    return float("inf")
+        return value.strftime("%d %b %Y, %I:%M %p").replace(", 0", ", ")
+    return _date(value)
+
+
+def pdf_dates_line(tender: Dict[str, Any]) -> Optional[str]:
+    """The closing / opening dates printed in the bid PDF, e.g. "closes 25 Aug 2026, 2:00 PM · opens ..."."""
+    meta = tender.get("metadata") or {}
+    parts = []
+    if meta.get("pdf_bid_end_date"):
+        parts.append(f"closes {_date_time(meta['pdf_bid_end_date'])}")
+    if meta.get("pdf_bid_opening_date"):
+        parts.append(f"opens {_date_time(meta['pdf_bid_opening_date'])}")
+    return " | ".join(parts) or None
 
 
 def document_filename(tender: Dict[str, Any]) -> str:
@@ -52,10 +58,12 @@ def tender_email_entry(tender: Dict[str, Any], match: Optional[Dict[str, Any]]) 
     meta = tender.get("metadata") or {}
     scraped = tender.get("scraped_info") or {}
     end_date = scraped.get("end_date")
-    close = _date(end_date)
-    days = _days_left(end_date)
+    close = _date_time(end_date)
+    days = days_left(end_date)
     if close and days is not None:
         close = f"{close} ({days} day{'s' if days != 1 else ''} left)"
+    if close and extended_from(tender):
+        close = f"{close} - extended by the buyer"
 
     entry: Dict[str, Any] = {
         "id": str(tender.get("_id") or tender.get("id")),
@@ -67,6 +75,7 @@ def tender_email_entry(tender: Dict[str, Any], match: Optional[Dict[str, Any]]) 
         "summary": meta.get("what_is_being_bought") or meta.get("summary"),
         "published_date": _date(scraped.get("start_date")),
         "close_date": close,
+        "pdf_dates": pdf_dates_line(tender),
         "emd_amount": meta.get("emd_amount"),
         "bid_value": scraped.get("bid_value_range") or meta.get("estimated_value"),
         "match_percent": None,
@@ -109,8 +118,8 @@ class ShareService:
         items = [item for item in saved.get("items") or [] if item.get("tender")]
         if not items:
             raise ValueError("No saved tenders to send")
-        # Nearest closing date first: those PDFs get attached before the size limit is reached.
-        items.sort(key=lambda item: _sort_key((item["tender"].get("scraped_info") or {}).get("end_date")))
+        # Same order as the match list: Pursue, then Consider; latest closing date first inside each.
+        items.sort(key=lambda item: match_order_key((item.get("match") or {}).get("score") or 0, item["tender"]))
 
         budget = int(settings.EMAIL_MAX_ATTACHMENT_MB * 1024 * 1024)
         used = 0

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set
 from app.config import settings
 from app.database.mongodb import get_database
 from app.scraper.gem_scraper import GemScraper
-from app.services.tender_service import TenderService
+from app.services.tender_service import TenderService, is_reverse_auction, update_expired_flags
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -106,7 +106,10 @@ class _Pipeline:
         try:
             await self.service.create_or_update_from_scrape(bid)
             self.stats["new_tenders"] += 1
-            if await self.service.process_tender(bid.get("bid_id")):
+            if is_reverse_auction(bid):
+                # Already in Reverse Auction: new sellers cannot take part, so no LLM call.
+                self.stats["reverse_auction_skipped"] = self.stats.get("reverse_auction_skipped", 0) + 1
+            elif await self.service.process_tender(bid.get("bid_id")):
                 self.stats["pdfs_downloaded"] += 1
                 self.stats["llm_processed"] += 1
         except Exception as exc:
@@ -406,6 +409,7 @@ async def _refresh_matches(db) -> None:
     try:
         from app.services.relevance_service import RelevanceService
 
+        await update_expired_flags(db)  # closed / Reverse Auction bids are not judged
         await RelevanceService(db).refresh_all_companies()
     except Exception as exc:
         logger.info("relevance.refresh_after_job_failed", error=str(exc))

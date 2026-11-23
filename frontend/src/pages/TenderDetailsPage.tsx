@@ -8,6 +8,7 @@ import ShareTender from "@/components/modals/ShareTender";
 import { MatchVerdict, procurementLabel, TenderBriefSections } from "@/components/tenders/TenderBrief";
 import { useToastSimple } from "@/components/ui/toaster-simple";
 import { getCompanyId } from "@/lib/auth";
+import { daysLeft as gemDaysLeft, extendedFrom, formatGemDate } from "@/lib/gemDates";
 import { downloadTenderDocument, fetchTenderDetail, fetchTenderMatch, updateTenderAction } from "@/services/tenderAgentApi";
 
 const TenderDetailsPage = () => {
@@ -51,12 +52,8 @@ const TenderDetailsPage = () => {
     staleTime: 5 * 60 * 1000,
   });
 
-  const daysLeft = useMemo(() => {
-    if (!scraped.end_date) return null;
-    const end = new Date(scraped.end_date).getTime();
-    if (Number.isNaN(end)) return null;
-    return Math.max(0, Math.ceil((end - Date.now()) / 86_400_000));
-  }, [scraped.end_date]);
+  const daysLeft = useMemo(() => gemDaysLeft(scraped.end_date), [scraped.end_date]);
+  const originalClose = extendedFrom(tender);
 
   return (
     <div>
@@ -99,7 +96,7 @@ const TenderDetailsPage = () => {
         <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-[#475068]">
           <span>Amount: {amount}</span>
           {meta.emd_amount && <span>EMD: {meta.emd_amount}</span>}
-          <span>Closes: {String(scraped.end_date || "N/A").slice(0, 10)}</span>
+          <span>Closes: {formatGemDate(scraped.end_date, true) || "N/A"}</span>
           {daysLeft !== null && (
             <span
               className={`rounded px-2 py-1 text-xs ${
@@ -113,6 +110,20 @@ const TenderDetailsPage = () => {
               {daysLeft}d left
             </span>
           )}
+          {originalClose && (
+            <span
+              className="rounded bg-[#fdeecf] px-2 py-1 text-xs text-[#9a6400]"
+              title="The buyer extended the deadline after publishing. GeM's listing shows the current date; the bid PDF keeps the original."
+            >
+              Extended by buyer
+            </span>
+          )}
+        </div>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-[#687088]">
+          <span className="font-medium text-[#475068]">As per bid PDF:</span>
+          <span>Closes {formatGemDate(meta.pdf_bid_end_date, true) || "N/A"}</span>
+          <span>Opens {formatGemDate(meta.pdf_bid_opening_date, true) || "N/A"}</span>
+          <span>Published {formatGemDate(meta.pdf_bid_published_date) || "N/A"}</span>
         </div>
 
         <div className="mt-6 grid gap-4">

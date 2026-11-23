@@ -81,10 +81,10 @@ async def test_share_saved_sends_one_digest_with_pdfs(fake_db, tmp_path, monkeyp
     assert len(email.sent) == 1
     message = email.sent[0]
     assert message["subject"] == "3 saved GeM tenders - Nervesparks"
-    # Nearest closing date first, so it is attached before the size limit is hit.
-    assert [name for name, _ in message["attachments"]] == ["GEM_2026_B_2.pdf", "GEM_2026_B_3.pdf"]
+    # Same order as the match list: equal scores -> the latest closing date (most time to bid) first.
+    assert [name for name, _ in message["attachments"]] == ["GEM_2026_B_1.pdf", "GEM_2026_B_3.pdf"]
     body = message["body"]
-    assert body.index("Chatbot development") < body.index("Data analytics") < body.index("AI platform")
+    assert body.index("AI platform") < body.index("Data analytics") < body.index("Chatbot development")
     assert "EMD: ₹70,20,000" in body
     assert "Match: " in body
     assert "not attached (email size limit)" in body

@@ -168,6 +168,15 @@ def _apply_update(doc: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]
     return payload
 
 
+def _bson(value: Any) -> Any:
+    """Like MongoDB, compare datetimes as UTC instants (naive values are taken as UTC)."""
+    from datetime import datetime, timezone
+
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 def _matches(doc: Dict[str, Any], filters: Dict[str, Any]) -> bool:
     if not filters:
         return True
@@ -200,10 +209,10 @@ def _matches(doc: Dict[str, Any], filters: Dict[str, Any]) -> bool:
                     if not re.search(expected, str(actual or ""), flags=flags):
                         return False
                 elif operator == "$gte":
-                    if actual is None or actual < expected:
+                    if actual is None or _bson(actual) < _bson(expected):
                         return False
                 elif operator == "$lt":
-                    if actual is None or actual >= expected:
+                    if actual is None or _bson(actual) >= _bson(expected):
                         return False
                 elif operator == "$options":
                     continue

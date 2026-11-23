@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { CalendarClock, CheckCircle2, HelpCircle, ClipboardList, ShieldCheck, Target, XCircle } from "lucide-react";
 
+import { extendedFrom, formatGemDate } from "@/lib/gemDates";
 import { Level, Recommendation, Tender, TenderMatch } from "@/types/tender-agent";
 
 const levelStyle: Record<Level, string> = {
@@ -152,8 +153,18 @@ export const TenderBriefSections = ({ tender }: { tender?: Tender }) => {
   const schedule = [
     { label: "Pre-bid queries", value: dates.pre_bid_queries },
     { label: "Pre-bid meeting", value: dates.pre_bid_meeting },
-    { label: "Bid submission", value: dates.bid_submission || (tender?.scraped_info?.end_date ? String(tender.scraped_info.end_date).slice(0, 16).replace("T", " ") : null) },
-    { label: "Bid opening", value: dates.bid_opening },
+    // The listing's deadline is the current one (it moves when the buyer extends the bid);
+    // the PDF keeps the original, so show that next to it when they differ.
+    {
+      label: "Bid submission",
+      value: (() => {
+        const current = formatGemDate(tender?.scraped_info?.end_date, true);
+        const original = extendedFrom(tender);
+        if (current && original) return `${current} (extended - bid document says ${formatGemDate(original, true)})`;
+        return current || formatGemDate(meta.pdf_bid_end_date, true) || dates.bid_submission;
+      })(),
+    },
+    { label: "Bid opening", value: formatGemDate(meta.pdf_bid_opening_date, true) || dates.bid_opening },
   ].filter((entry) => entry.value);
 
   const criteria = [

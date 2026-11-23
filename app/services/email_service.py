@@ -79,6 +79,8 @@ class EmailService:
             f"Published: {tender.get('published_date') or 'N/A'}",
             f"Closes: {tender.get('close_date') or 'N/A'}",
         ]
+        if tender.get("pdf_dates"):
+            lines.append(f"As per bid PDF: {tender['pdf_dates']}")
         if tender.get("emd_amount"):
             lines.append(f"EMD: {tender['emd_amount']}")
         lines.append(f"Bid value: {tender.get('bid_value') or 'N/A'}")

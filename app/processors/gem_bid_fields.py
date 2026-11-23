@@ -14,6 +14,7 @@ These are read with rules (not the LLM) because eligibility decisions depend on 
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 _LABEL_HINT = re.compile(r"/[A-Z]|[ऀ-ॿ]")  # bilingual label lines: Hindi text or "/Label"
@@ -51,8 +52,33 @@ def _relaxation(flat: str, who: str) -> Dict[str, bool]:
     return result
 
 
+_DATE = r"(\d{2}-\d{2}-\d{4})(?:\s+(\d{1,2}:\d{2})(?::\d{2})?)?"
+
+
+def _pdf_date(flat: str, label: str) -> Optional[datetime]:
+    """A date printed after an English label, e.g. "Bid End Date/Time 04-11-2026 12:00:00" (IST, naive)."""
+    match = re.search(rf"{label}\s*:?\s*{_DATE}", flat)
+    if not match:
+        return None
+    day, time = match.group(1), match.group(2) or "00:00"
+    try:
+        return datetime.strptime(f"{day} {time}", "%d-%m-%Y %H:%M")
+    except ValueError:
+        return None
+
+
+def parse_gem_bid_dates(text: str) -> Dict[str, Optional[datetime]]:
+    """Bid end / opening / published dates exactly as written in the GeM bid PDF."""
+    flat = re.sub(r"\s+", " ", text or "")
+    return {
+        "pdf_bid_end_date": _pdf_date(flat, r"Bid End Date\s*/\s*Time"),
+        "pdf_bid_opening_date": _pdf_date(flat, r"Bid Opening\s+Date\s*/\s*Time"),
+        "pdf_bid_published_date": _pdf_date(flat, r"/\s*Dated"),
+    }
+
+
 def parse_gem_bid_fields(text: str) -> Dict[str, Any]:
-    """Extract item category and MSE / Startup relaxations from GeM bid text."""
+    """Extract item category, MSE / Startup relaxations and the bid dates from GeM bid text."""
     lines = _lines(text)
     # Labels wrap across lines ("MSE" / "Relaxation for Turnover"); match on a whitespace-flattened copy.
     flat = re.sub(r"\s+", " ", " ".join(lines))
@@ -64,4 +90,5 @@ def parse_gem_bid_fields(text: str) -> Dict[str, Any]:
         "item_category": _item_category(lines),
         "mse_relaxation": _relaxation(flat, "MSE"),
         "startup_relaxation": _relaxation(flat, "Startup"),
+        **parse_gem_bid_dates(text),
     }

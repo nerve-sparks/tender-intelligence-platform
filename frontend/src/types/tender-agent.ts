@@ -98,8 +98,13 @@ export interface Tender {
     bid_type?: string;
     bid_value_range?: string;
     items?: string;
+    in_reverse_auction?: boolean;
   };
   metadata?: {
+    // Dates exactly as printed in the GeM bid PDF (India time)
+    pdf_bid_end_date?: string;
+    pdf_bid_opening_date?: string;
+    pdf_bid_published_date?: string;
     title?: string;
     department?: string;
     location?: string;

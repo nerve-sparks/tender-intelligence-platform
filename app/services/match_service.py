@@ -14,10 +14,31 @@ from app.database.repositories.tender_action_repo import TenderActionRepository
 from app.database.repositories.tender_repo import TenderRepository
 from app.processors.embedder import TextEmbedder
 from app.services.relevance_service import RelevanceService, build_match, cosine_similarity
+from app.services.tender_service import update_expired_flags
+from app.utils.gem_dates import as_gem_time, gem_now
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+CLOSING_SOON_DAYS = 2
+
+
+def match_order_key(score: float, tender: Dict[str, Any]) -> Tuple[int, int, float, float]:
+    """
+    Best-match order (sort ascending with this key):
+      1. Pursue (>= 80%) before Consider (70-79%) before the rest
+      2. inside a band, bids that still have time come before ones closing within 2 days
+      3. then the latest closing date first - most time to prepare a bid
+      4. then the higher score
+    """
+    band = 2 if score >= 0.8 else 1 if score >= 0.7 else 0
+    end = as_gem_time((tender.get("scraped_info") or {}).get("end_date"))
+    if end is None:
+        return (-band, 1, 0.0, -score)
+    closing_soon = (end - gem_now()) < timedelta(days=CLOSING_SOON_DAYS)
+    return (-band, 1 if closing_soon else 0, -end.timestamp(), -score)
 
 
 class MatchService:
@@ -44,6 +65,7 @@ class MatchService:
         if not profile or profile.get("owner_user_id") != owner_user_id:
             raise ValueError("Company profile not found")
 
+        await update_expired_flags(self.db)  # bids closing (India time) since the last scrape drop out
         candidate_filter = {
             "is_active": True,
             "expired": False,
@@ -93,13 +115,7 @@ class MatchService:
         if "latest" in sort_key:
             scored.sort(key=lambda item: self._timestamp(item[0].get("scraped_at")), reverse=True)
         else:
-            scored.sort(
-                key=lambda item: (
-                    item[1],
-                    self._timestamp((item[0].get("scraped_info") or {}).get("end_date")),
-                ),
-                reverse=True,
-            )
+            scored.sort(key=lambda item: match_order_key(item[1], item[0]))
 
         total = len(scored)
         start = max(page - 1, 0) * limit
